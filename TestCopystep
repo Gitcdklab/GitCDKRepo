@@ -1,1 +1,69 @@
+import boto3
+import io
+import os
+import zipfile
+import csv
+from datetime import datetime
 
+# ===== CHANGE THESE VALUES =====
+BUCKET_NAME = "s3-zip-bmo"
+SOURCE_PREFIX = "inbound/"      # e.g., "input/data/"
+DEST_PREFIX = "outbound/"   # e.g., "output/zips/"
+ZIP_NAME = ""     # optional, auto-generated if left blank
+# =================================
+
+s3 = boto3.client("s3")
+
+def list_objects(bucket, prefix):
+    paginator = s3.get_paginator("list_objects_v2")
+    pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
+    objects = []
+    for page in pages:
+        for obj in page.get("Contents", []):
+            if not obj["Key"].endswith("/"):  # skip folders
+                objects.append(obj)
+    return objects
+
+def create_zip(bucket, objects):
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        manifest = []
+        for obj in objects:
+            key = obj["Key"]
+            size = obj["Size"]
+            new_name = f"{os.path.splitext(os.path.basename(key))[0]}__{size}B{os.path.splitext(key)[1]}"
+            # Download and write to zip
+            body = s3.get_object(Bucket=bucket, Key=key)["Body"]
+            with zf.open(new_name, "w") as f:
+                for chunk in iter(lambda: body.read(1024 * 1024), b""):
+                    f.write(chunk)
+            manifest.append([key, new_name, size])
+        # Add manifest.csv
+        manifest_io = io.StringIO()
+        writer = csv.writer(manifest_io)
+        writer.writerow(["original_key", "new_name", "size_bytes"])
+        writer.writerows(manifest)
+        zf.writestr("manifest.csv", manifest_io.getvalue())
+    zip_buffer.seek(0)
+    return zip_buffer
+
+def upload_zip(bucket, dest_prefix, zip_buffer, zip_name):
+    if not zip_name:
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        zip_name = f"archive_{ts}.zip"
+    dest_key = f"{dest_prefix.rstrip('/')}/{zip_name}"
+    s3.upload_fileobj(zip_buffer, bucket, dest_key)
+    print(f"Uploaded ZIP to s3://{bucket}/{dest_key}")
+
+def main():
+    print(f"Listing files from s3://{BUCKET_NAME}/{SOURCE_PREFIX}")
+    objects = list_objects(BUCKET_NAME, SOURCE_PREFIX)
+    if not objects:
+        print("No files found.")
+        return
+    print(f"Found {len(objects)} files. Creating ZIP...")
+    zip_buffer = create_zip(BUCKET_NAME, objects)
+    upload_zip(BUCKET_NAME, DEST_PREFIX, zip_buffer, ZIP_NAME)
+
+if __name__ == "__main__":
+    main()
