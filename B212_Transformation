@@ -24,9 +24,9 @@ job = Job(glueContext)
 #---------------------------------------------------------------------------------------------------------------------
 
 # source file code, file name and Athena table name
-fileCode               = 'V068'
+fileCode               = "B212"
 sourceFileName         = fileCode + '.SAMPLEFILE'
-sourceTableName        = 'v068_sourcefile'
+sourceTableName        = 'b212_sourcefile'
 
 # S3 bucket and root transformation folder
 bucketURI              = 's3://wdda1-ue1-dev-rise-inbound1'
@@ -57,6 +57,7 @@ auditFileName          = sourceFileName + ".AUDIT.txt"
 mapStructErrFileName   = sourceFileName + ".MAP_STRUCT_ERRORS.txt"
 mapOutputErrFileName   = sourceFileName + ".MAP_OUTPUT_ERRORS.txt"
 logFileName            = sourceFileName + ".LOG.txt"
+
 #---------------------------------------------------------------------------------------------------------------------
 # RenameDataLakeFile
 #---------------------------------------------------------------------------------------------------------------------
@@ -74,34 +75,58 @@ def RenameDataLakeFile(s3BucketURI, sourcePath, targetPath, newFileName):
     fs.rename(outputFilePath, Path(targetPath + newFileName))
 
 #---------------------------------------------------------------------------------------------------------------------
-# Read the v068 sourcefile into a DynamicFrame from the v068_samplefile Athena table
+# Read the b212 sourcefile into a DynamicFrame from the ascii_samplefile Athena table
 #---------------------------------------------------------------------------------------------------------------------
 
-#source_df = sqlContext.sql("SELECT monotonically_increasing_id() as _ROW_ID, value FROM rise_etl.v68_sourcefile")
-source_df = sqlContext.sql("SELECT monotonically_increasing_id() as _ROW_ID, value FROM text.`s3://wdda1-ue1-dev-rise-inbound1/transformation/V068/source/V68.SAMPLFILE.txt`")
+#source_df = sqlContext.sql("SELECT monotonically_increasing_id() as _ROW_ID, value FROM rise_etl.b212_sourcefile")
+source_df = sqlContext.sql("SELECT monotonically_increasing_id() as _ROW_ID, value FROM text.`" + sourcePath + sourceFileName + ".txt`")
+
+#source_df.show()
 
 source_dyf = DynamicFrame.fromDF(source_df, glueContext)
-source_dyf.show(5)
-
+source_dyf.show()
 #---------------------------------------------------------------------------------------------------------------------
 # Read xRef-AccountType lookup table
 #---------------------------------------------------------------------------------------------------------------------
-xRefAccTypePath = lookupPath + 'x-ref-account-type.txt'
 
-xRefAccTypeDF = glueContext.create_dynamic_frame.from_options(
-    connection_type="s3",
-    connection_options={"paths": [xRefAccTypePath]},
-    format="csv",
-    format_options={
-        "withHeader": True,
-        "separator": "|"
-    }
-)
+xrefAccType_df    = sparkSession.read.option("header", True).option("sep", '|').csv(lookupPath + 'x-ref-account-type.txt')
 
-xRefAccTypeList = map(lambda row: row.asDict(), xRefAccTypeDF.toDF().collect())
-xRefAccTypeLookup = {elem["_Key_AccType"]: elem["_Value_AccType"] for elem in xRefAccTypeList}
-xRefAccTypeDF.show()
+xrefAccTypeList   = map(lambda row: row.asDict(), xrefAccType_df.collect())
+xrefAccTypeLookup = {elem["_Key_AccType"]: elem["_Value_AccType"] for elem in xrefAccTypeList}
 
+print(xrefAccTypeLookup)
+#---------------------------------------------------------------------------------------------------------------------
+# Read xRef-Exchange lookup table
+#---------------------------------------------------------------------------------------------------------------------
+xrefExch_df    = sparkSession.read.option("header", True).option("sep", '|').csv(lookupPath + 'x-ref-exchange.txt')
+
+xrefExchList = map(lambda row: row.asDict(), xrefExch_df.collect())
+xrefExchLookup = {elem["_Key_Exch"]: elem["_Value_Exch"] for elem in xrefExchList}
+
+print(xrefExchLookup)
+#---------------------------------------------------------------------------------------------------------------------
+# Read xRef-SecClassCode lookup table
+#---------------------------------------------------------------------------------------------------------------------
+ 
+xrefSecClassCode_df  = sparkSession.read.option("header", True).option("sep", '|').csv(lookupPath + 'x-ref-sec-class-code.txt')
+
+xrefSecClassCodeList = map(lambda row: row.asDict(), xrefSecClassCode_df.collect())
+xrefSecClassCodeLookup = {elem["_Key_SecClass"]: elem["_Value_SecClass"] for elem in xrefSecClassCodeList}
+
+print(xrefSecClassCodeLookup)
+mapTransSideIncicator = {
+    "1": "C",
+    "2": "S"
+}
+
+print(mapTransSideIncicator)
+mapOptionCode = {
+    "X": "1",
+    "C": "2",
+    "G": "3"
+}
+
+print(mapOptionCode)
 #---------------------------------------------------------------------------------------------------------------------
 # Define structure of each row in the DynamicFrame
 #---------------------------------------------------------------------------------------------------------------------
@@ -121,267 +146,1143 @@ def CreateSourceRowStructure(record):
     
     rowId      = record["_ROW_ID"]
     rowData    = record["value"]
-
+    
     rowStatus  = 0
     exceptions = []
 
     # Check row length
     rowLength = len(rowData)
     
-    if rowLength != 144:
+    if rowLength != 349:
         
-        # <Unknown> row type
-        rowType = "<Unrecognized>"
-            
-        # Row has incorrect length != 144
+        # Row has incorrect length != 249
         rowStatus = -1
         exceptions.append(f"INVALID_LENGHT#ROW#Invalid row length [{rowLength}]")
-
-        record["_ROW_TYPE"]       = rowType
+        
         record["_ROW_STATUS"]     = rowStatus
         record["_ROW_EXCEPTIONS"] = exceptions
 
         return record
-
-    # Row has correct length = 144
+        
+    # Row has correct length = 249
     
-    filler1             = rowData[5-1:24]
-    rowType             = rowData[25-1]
+    c16       = rowData[16-1]
+    c22       = rowData[22-1]
+    c23       = rowData[23-1]
+    c29       = rowData[29-1]
 
+    trid      = rowData[29-1]
+    spin      = rowData[30-1]
+    rowType   = trid + spin
+    
     branchNumber        = rowData[4-1:6]
-    accountType         = rowData[16-1]
+    accountType         = rowData[15-1]
     accountChekckDigit  = '~'
+    
+    if rowType == "11":
 
-    if rowType == "1":
+        if c23 == " ":
 
-        if filler1 == " " * 20:
+            # Customer Position Header
+            rowType = "Customer Position Header"
+            accountChekckDigit                                 = rowData[300-1]
 
-            # Header record
-            rowType = "Header record"
-
-            filler0                             = rowData[1-1]
-            if filler0 == " " * 1:
-                record["FILLER 0"]              = filler0
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (0)#Filler containing data [{filler0}]")
-            
-            record["CLIENT"]                    = rowData[2-1:4]
-            record["FILLER 1"]                  = rowData[5-1:24]
-            record["RECORD TYPE"]               = rowData[25-1]
-            record["DATE="]                     = rowData[26-1:30]
-            record["FILE CREATION DATE & TIME"] = rowData[31-1:42]
-            record["ADP-SEC-POSITION"]          = rowData[43-1:58]
-
-            filler9                             = rowData[59-1:144]
-            if filler9 == " " * 86:
-                record["FILLER 9"]              = filler9
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[59:144] (9)#Filler containing data [{filler9}]")
-
-        else:
-
-            # Memo H record
-            rowType = "Memo H record"
-            accountChekckDigit                  = rowData[17-1]
-
-            filler0                             = rowData[1-1]
-            if filler0 == " " * 1:
-                record["FILLER 0"]              = filler0
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (0)#Filler containing data [{filler0}]")
-            
-            record["CLIENT"]                    = rowData[2-1:4]
-            record["BRANCH"]                    = rowData[5-1:7]
-            record["ACCOUNT"]                   = rowData[8-1:12]
-            record["CURRENCY"]                  = rowData[13-1:15]
+            record["CLIENT NUMBER"]                            = rowData[1-1:3]
+            record["BRANCH NUMBER"]                            = rowData[4-1:6]
+            record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
+            record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
             
             # Account Type lookup
-            accountType                         = rowData[16-1]
-            accountTypeXRef                     = xRefAccTypeLookup.get(accountType)
+            accountType                                        = rowData[15-1]
+            accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
             
             if accountTypeXRef is not None:
-                record["TYPE"]                  = accountTypeXRef
-                record["NEW TYPE"]              = branchNumber + accountTypeXRef + accountChekckDigit
+                record["ACCOUNT TYPE"]                         = accountTypeXRef
+                record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
             else:
-                record["TYPE"]                  = accountType
-                record["NEW TYPE"]              = ""
+                record["ACCOUNT TYPE"]                         = accountType
+                record["NEW ACCOUNT TYPE"]                     = ""
                 rowStatus = -3
                 exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
 
-            record["CHKDIG"]                    = rowData[17-1]
-            record["ADP SECURITY CODE"]         = rowData[18-1:24]
-            record["RECORD TYPE 1"]             = rowData[25-1]
-            record["RR"]                        = rowData[26-1:28]
-            record["TD QUANTITY"]               = rowData[29-1:45]
-            record["TD QUANTITY SGN"]           = rowData[46-1:46]
-            record["SD QUANTITY"]               = rowData[47-1:63]
-            record["SD QUANTITY SGN"]           = rowData[64-1:64]
-            record["MEMO COUNT"]                = rowData[65-1:66]
-            record["MEMO SB QUANTITY"]          = rowData[67-1:83]
-            record["MEMO SB QUANTITY SGN"]      = rowData[84-1:84]
-            record["MEMO SD QUANTITY"]          = rowData[85-1:101]
-            record["MEMO SD QUANTITY SGN"]      = rowData[102-1:102]
-            record["MEMO TM QUANTITY"]          = rowData[103-1:119]
-            record["MEMO TM QUANTITY SGN"]      = rowData[120-1:120]
-
-            filler9                             = rowData[121-1:144]
-            if filler9 == " " * 24:
-                record["FILLER 9"]              = filler9
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[121:144] (9)#Filler containing data [{filler9}]")
-
-    elif rowType == "2":
-
-        # Memo T record
-        rowType = "Memo T record"
-        accountChekckDigit                  = rowData[17-1]
-
-        filler0                             = rowData[1-1]
-        if filler0 == " " * 1:
-            record["FILLER 0"]              = filler0
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (0)#Filler containing data [{filler0}]")
-
-        record["CLIENT"]                    = rowData[2-1:4]
-        record["BRANCH"]                    = rowData[5-1:7]
-        record["ACCOUNT"]                   = rowData[8-1:12]
-        record["CURRENCY"]                  = rowData[13-1:15]
+            record["SECURITY NUMBER"]                          = rowData[16-1:22]
             
-        # Account Type lookup
-        accountType                         = rowData[16-1]
-        accountTypeXRef                     = xRefAccTypeLookup.get(accountType)
-        
-        if accountTypeXRef is not None:
-            record["TYPE"]                  = accountTypeXRef
-            record["NEW TYPE"]              = branchNumber + accountTypeXRef + accountChekckDigit
-        else:
-            record["TYPE"]                  = accountType
-            record["NEW TYPE"]              = ""
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-        record["CHKDIG"]                    = rowData[17-1]
-        record["ADP SECURITY CODE"]         = rowData[18-1:24]
-        record["RECORD TYPE Z"]             = rowData[25-1]
-        record["MEMO TF QUANTITY"]          = rowData[26-1:42]
-        record["MEMO TF QUANTITY SIGN"]     = rowData[43-1:43]
-        record["MEMO TR QUANTITY"]          = rowData[44-1:60]
-        record["MEMO TR QUANTITY SIGN"]     = rowData[61-1:61]
-        record["MEMO TL QUANTITY"]          = rowData[62-1:78]
-        record["MEMO TL QUANTITY SIGN"]     = rowData[79-1:79]
-        record["MEMO SK QUANTITY"]          = rowData[80-1:96]
-        record["MEMO SK QUANTITY SIGN"]     = rowData[97-1:97]
-        record["MEMO SN QUANTITY"]          = rowData[98-1:114]
-        record["MEMO SN QUANTITY SIGN"]     = rowData[115-1:115]
-        record["MEMO OD QUANTITY"]          = rowData[116-1:132]
-        record["MEMO OD QUANTITY SIGN"]     = rowData[133-1:133]
-
-        filler9                             = rowData[134-1:144]
-        if filler9 == " " * 11:
-            record["FILLER 9"]              = filler9
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[134:144] (9)#Filler containing data [{filler9}]")
-
-    elif rowType == "3":
-
-        # Memo M record
-        rowType = "Memo M record"
-        accountChekckDigit                  = rowData[17-1]
-        
-        filler0                             = rowData[1-1]
-        if filler0 == " " * 1:
-            record["FILLER 0"]              = filler0
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (0)#Filler containing data [{filler0}]")
-
-        record["CLIENT 068"]                = rowData[2-1:4]
-        record["BRANCH"]                    = rowData[5-1:7]
-        record["ACCOUNT"]                   = rowData[8-1:12]
-        record["CURRENCY"]                  = rowData[13-1:15]
-
-        # Account Type lookup
-        accountType                         = rowData[16-1]
-        accountTypeXRef                     = xRefAccTypeLookup.get(accountType)
-        
-        if accountTypeXRef is not None:
-            record["TYPE"]                  = accountTypeXRef
-            record["NEW TYPE"]              = branchNumber + accountTypeXRef + accountChekckDigit
-        else:
-            record["TYPE"]                  = accountType
-            record["NEW TYPE"]              = ""
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-        record["CHKDIG"]                    = rowData[17-1]
-        record["ADP SECURITY CODE"]         = rowData[18-1:24]
-        record["RECORD TYPE 3"]             = rowData[25-1]
-        record["MEMO OR QUANTITY"]          = rowData[26-1:43]
-        record["MEMO OR QUANTITY SIGN"]     = rowData[44-1:44]
-        record["MEMO TB QUANTITY"]          = rowData[45-1:56]
-        record["MEMO TB QUANTITY SIGN"]     = rowData[57-1:57]
-        record["MEMO TC QUANTITY"]          = rowData[58-1:69]
-        record["MEMO TC QUANTITY SIGN"]     = rowData[70-1:70]
-
-        filler9                             = rowData[71-1:144]
-        if filler9 == " " * 74:
-            record["FILLER 9"]              = filler9
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[71:144] (9)#Filler containing data [{filler9}]")
-
-    elif rowType == "Z":
-    
-        if filler1 == "9" * 20:
-
-            # Trailer record
-            rowType = "Trailer record"
-
-            filler0                             = rowData[1-1]
-            if filler0 == " " * 1:
-                record["FILLER 0"]              = filler0
+            filler1                                            = rowData[23-1:28]
+            if filler1 == " " * 6:
+                record["FILLER 1"]                             = filler1
             else:
                 rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (0)#Filler containing data [{filler0}]")
-
-            record["CLIENT 068"]                = rowData[2-1:4]
-            record["FILLER 1"]                  = rowData[5-1:24]
-            record["RECORD TYPE"]               = rowData[25-1]
-            record["REC CTR"]                   = rowData[26-1:33]
-            record["RECORD COUNT"]              = rowData[34-1:41]
-
-            filler9                             = rowData[42-1:144]
-            if filler9 == " " * 103:
-                record["FILLER 9"]              = filler9
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[42:144] (9)#Filler containing data [{filler9}]")
-
-        else:
-            # <Unknown>
-            rowType = "<Unrecognized>"
+                exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
             
+            record["TRID"]                                     = rowData[29-1]
+            record["SPIN"]                                     = rowData[30-1]
+            record["SECURITY DESCRIPTION LINE 1"]              = rowData[31-1:60]
+            record["DATE LAST ACTIVE"]                         = rowData[61-1:66]
+            record["MEMO FLAGS (0000)"]                        = rowData[67-1:70]
+            
+            # Exchange Code lookup
+            exchangeCode                                       = rowData[71-1]
+            exchangeCodeXRef                                   = xrefExchLookup.get(exchangeCode)
+            
+            if exchangeCodeXRef is not None:
+                record["EXCHANGE CODE"]                        = exchangeCodeXRef
+            else:
+                record["EXCHANGE CODE"]                        = exchangeCode
+                rowStatus = -3
+                exceptions.append(f"INVALID_XREF#EXCHANGE CODE#No lookup value for [{exchangeCode}]")
+            
+            record["SECURITY SPIN"]                            = rowData[72-1]
+            record["TRADE DATE QUANTITY SIGN"]                 = rowData[73-1]
+            record["TRADE DATE QUANTITY"]                      = rowData[74-1:90]
+            record["SETTLEMENT DATE QUANTITY SIGN"]            = rowData[91-1]
+            record["SETTLEMENT DATE QUANTITY"]                 = rowData[92-1:108]
+            record["MEMO FIELD 1 SIGN"]                        = rowData[109-1]
+            record["MEMO FIELD 1"]                             = rowData[110-1:126]
+            record["MEMO FIELD 2 SIGN"]                        = rowData[127-1]
+            record["MEMO FIELD 2"]                             = rowData[128-1:144]
+            record["MEMO FIELD 3 SIGN"]                        = rowData[145-1]
+            record["MEMO FIELD 3"]                             = rowData[146-1:162]
+            record["MEMO FIELD 4 SIGN"]                        = rowData[163-1]
+            record["MEMO FIELD 4"]                             = rowData[164-1:180]
+            record["SHORT VS BOX SIGN"]                        = rowData[181-1]
+            record["SHORT VS BOX"]                             = rowData[181-1:198]
+            record["NUMBER OF SHORT DAYS SIGN"]                = rowData[199-1]
+            record["NUMBER OF SHORT DAYS"]                     = rowData[200-1]
+            record["HOUSE REQUIREMENT % SIGN"]                 = rowData[201-1]
+            record["HOUSE REQUIREMENT %"]                      = rowData[202-1:204]
+            record["RECORD FLAGS"]                             = rowData[205-1:208]
+            record["MARKET PRICE"]                             = rowData[209-1:223]
+            record["IDA"]                                      = rowData[224-1:227]
+
+            # Security Class Code lookup
+            secClassCode                                       = rowData[228-1:234]
+            secClassCodeXRef                                   = xrefSecClassCodeLookup.get(secClassCode[1-1])
+            
+            if secClassCodeXRef is not None:
+                record["MSD CLASS CODE"]                       = secClassCodeXRef
+            else:
+                record["MSD CLASS CODE"]                       = secClassCode
+                rowStatus = -3
+                exceptions.append(f"INVALID_XREF#MSD CLASS CODE#No lookup value for [{secClassCode}]")
+
+            record["MARKET VALUE SIGN"]                        = rowData[235-1]
+            record["MARKET VALUE"]                             = rowData[235-1:252]
+            record["MATURITY DATE"]                            = rowData[253-1:258]
+            record["HOUSE REQUIREMENT AMOUNT SIGN"]            = rowData[259-1]
+            record["HOUSE REQUIREMENT AMOUNT"]                 = rowData[258-1:276]
+            record["S/D REQUIREMENT AMOUNT SIGN"]              = rowData[277-1]
+            record["S/D REQUIREMENT AMOUNT"]                   = rowData[278-1:294]
+            record["PREFERRED SEG SECURITY FLAG"]              = rowData[295-1:296]
+
+            # Account Range Indicator Mapping
+            accountRangeIncicator                              = rowData[297-1]
+            accountRangeIncicatorMap                           = mapTransSideIncicator.get(accountRangeIncicator)
+            
+            if accountRangeIncicatorMap is not None:
+                record["ACCOUNT RANGE INDICATOR"]              = accountRangeIncicatorMap
+            else:
+                record["ACCOUNT RANGE INDICATOR"]              = accountRangeIncicator
+                rowStatus = -3
+                exceptions.append(f"INVALID_MAP#ACCOUNT RANGE INDICATOR#No mapped value for [{accountRangeIncicator}]")
+
+            filler8                                            = rowData[298-1:299]
+            if filler8 == " " * 2:
+                record["FILLER 8"]                             = filler8
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[298:299] (8)#Filler containing data [{filler8}]")
+            
+            record["ACCOUNT CHECK DIGIT"]                      = rowData[300-1]
+
+            filler9                                            = rowData[301-1:349]
+            if filler9 == " " * 49:
+                record["FILLER 9"]                             = filler9
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[301:349] (9)#Filler containing data [{filler9}]")
+            
+        elif c22 != " ":
+            
+            # Option Header
+            rowType = "Option Header"
+            accountChekckDigit                                 = rowData[289-1]
+
+            record["CLIENT NUMBER"]                            = rowData[1-1:3]
+            record["BRANCH NUMBER"]                            = rowData[4-1:6]
+            record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
+            record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
+            
+            # Account Type lookup
+            accountType                                        = rowData[15-1]
+            accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
+            
+            if accountTypeXRef is not None:
+                record["ACCOUNT TYPE"]                         = accountTypeXRef
+                record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
+            else:
+                record["ACCOUNT TYPE"]                         = accountType
+                record["NEW ACCOUNT TYPE"]                     = ""
+                rowStatus = -3
+                exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+            record["UNDERLYING SECURITY NUMBER"]               = rowData[16-1:21]
+            record["OPTION BYTE"]                              = rowData[22-1]
+
+            filler1                                            = rowData[23-1:28]
+            if filler1 == " " * 6:
+                record["FILLER 1"]                             = filler1
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
+
+            record["TRID"]                                     = rowData[29-1]
+            record["SPIN"]                                     = rowData[30-1]
+            record["SECURITY DESCRIPTION"]                     = rowData[31-1:60]
+
+            filler2                                            = rowData[61-1:66]
+            if filler2 == " " * 6:
+                record["FILLER 2"]                             = filler2
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[61:66] (2)#Filler containing data [{filler2}]")
+
+            record["OPTION SECURITY NUMBER"]                   = rowData[67-1:72]
+            
+            # Expiry Indicator Mapping
+            expiryIndicator                                    = rowData[67-1:68]
+            expiryIndicatorMap                                 = "T "
+            
+            if expiryIndicator == "X ":
+                record["EXPIRATION CODE"]                      = expiryIndicatorMap
+            else:
+                record["EXPIRATION CODE"]                      = expiryIndicator
+                rowStatus = -3
+                exceptions.append(f"INVALID_MAP#EXPIRATION CODE#No mapped value for [{expiryIndicator}]")
+
+            # Option Code Mapping
+            optionCode                                         = rowData[69-1:70]
+            optionCodeMap                                      = mapOptionCode.get(optionCode)
+            
+            if optionCodeMap is not None:
+                record["OPTION CODE"]                          = optionCodeMap
+            else:
+                record["OPTION CODE"]                          = optionCode
+                rowStatus = -3
+                exceptions.append(f"INVALID_MAP#OPTION CODE#No mapped value for [{optionCode}]")
+
+            # Exchange Code lookup
+            exchangeCode                                       = rowData[71-1]
+            exchangeCodeXRef                                   = xrefExchLookup.get(exchangeCode)
+            
+            if exchangeCodeXRef is not None:
+                record["EXCHANGE CODE"]                        = exchangeCodeXRef
+            else:
+                record["EXCHANGE CODE"]                        = exchangeCode
+                rowStatus = -3
+                exceptions.append(f"INVALID_XREF#EXCHANGE CODE#No lookup value for [{exchangeCode}]")
+
+            # Legacy Special Information Mapping
+            securitySpin                                       = rowData[72-1]
+            securitySpinMap                                    = "O"
+            
+            if securitySpin == "M":
+                record["SECURITY SPIN"]                        = securitySpinMap
+            else:
+                record["SECURITY SPIN"]                        = securitySpin
+                rowStatus = -3
+                exceptions.append(f"INVALID_MAP#SECURITY SPIN#No mapped value for [{securitySpin}]")
+
+            record["LONG QUANTITY SIGN"]                       = rowData[73-1]
+            record["LONG QUANTITY"]                            = rowData[74-1:90]
+            record["SHORT QUANTITY SIGN"]                      = rowData[91-1]
+            record["SHORT QUANTITY"]                           = rowData[92-1:106]
+            record["STRIKE PRICE"]                             = rowData[210-1:223]
+            record["IDA"]                                      = rowData[224-1:227]
+
+            # Security Class Code lookup
+            secClassCode                                       = rowData[228-1:234]
+            secClassCodeXRef                                   = xrefSecClassCodeLookup.get(secClassCode[1-1])
+            
+            if secClassCodeXRef is not None:
+                record["MSD CLASS CODE"]                       = secClassCodeXRef
+            else:
+                record["MSD CLASS CODE"]                       = secClassCode
+                rowStatus = -3
+                exceptions.append(f"INVALID_XREF#MSD CLASS CODE#No lookup value for [{secClassCode}]")
+
+            filler7                                            = rowData[235-1:252]
+            if filler7 == " " * 18:
+                record["FILLER 7"]                             = filler7
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[235:252] (7)#Filler containing data [{filler7}]")
+
+            record["EXPIRATION DATE"]                          = rowData[253-1:258]
+
+            filler8                                            = rowData[259-1:297]
+            if filler8 == " " * 39:
+                record["FILLER 8"]                             = filler8
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[259:297] (8)#Filler containing data [{filler8}]")
+
+            record["LAST DIGIT OF UNDERLYING SECURITY NUMBER"] = rowData[297-1]
+            record["ACCOUNT CHECK DIGIT"]                      = rowData[298-1]
+
+            filler9                                            = rowData[299-1:349]
+            if filler9 == " " * 39:
+                record["FILLER 9"]                             = filler9
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[259:297] (9)#Filler containing data [{filler9}]")
+            
+        else:
             # Bad structure of the record
             rowStatus = -2
-            exceptions.append(f"INVALID_STRUCTURE#ROW TYPE[@[25]={rowType},FILLER@[5:24]={filler1}]#Invalid row type")
-            
-    else:
-        # <Unknown>
-        rowType = "<Unrecognized>"
-            
-        # Bad structure of the record
-        rowStatus = -2
-        exceptions.append(f"INVALID_STRUCTURE#ROW TYPE[@[25]={rowType}]#Invalid row type")
+            exceptions.append(f"INVALID_STRUCTURE#ROW TYPE[TRID={trid},SPIN={spin},@[22]={c22}]#Invalid row type")
+        
+    elif rowType == "12":
 
-    record["_ROW_TYPE"]                         = rowType
-    record["_ROW_STATUS"]                       = rowStatus
-    record["_ROW_EXCEPTIONS"]                   = exceptions        
+        # Customer Position Trailer
+        rowType = "Customer Position Trailer"
+        accountChekckDigit                                 = rowData[86-1]
+
+        record["CLIENT NUMBER"]                            = rowData[1-1:3]
+        record["BRANCH NUMBER"]                            = rowData[4-1:6]
+        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
+        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
+            
+        # Account Type lookup
+        accountType                                        = rowData[15-1]
+        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
+
+        if accountTypeXRef is not None:
+            record["ACCOUNT TYPE"]                         = accountTypeXRef
+            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
+        else:
+            record["ACCOUNT TYPE"]                         = accountType
+            record["NEW ACCOUNT TYPE"]                     = ""
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+        record["SECURITY NUMBER"]                          = rowData[16-1:22]
+
+        filler1                                            = rowData[23-1:28]
+        if filler1 == " " * 6:
+            record["FILLER 1"]                             = filler1
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
+
+        record["TRID"]                                     = rowData[29-1]
+        record["SPIN"]                                     = rowData[30-1]
+        record["SECURITY DESCRIPTION LINE 2"]              = rowData[31-1:60]
+        record["MATURITY OR EXPIRATION DATE"]              = rowData[61-1:69]
+        record["BOND INTEREST RATE"]                       = rowData[69-1:79]
+        record["FREQUENCY CODE"]                           = rowData[80-1]
+        record["CALL CODE"]                                = rowData[81-1]
+        record["DATED DATE"]                               = rowData[82-1:85]
+        record["ACCOUNT CHECK DIGIT"]                      = rowData[86-1]
+
+        filler9                                            = rowData[87-1:349]
+        if filler9 == " " * 263:
+            record["FILLER 9"]                             = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[259:297] (9)#Filler containing data [{filler9}]")
+
+    elif rowType == "22":
+
+        # When-Issue Customer Trailer
+        rowType = "When-Issue Customer Trailer"
+        accountChekckDigit                                 = rowData[86-1]
+
+        record["CLIENT NUMBER"]                            = rowData[1-1:3]
+        record["BRANCH NUMBER"]                            = rowData[4-1:6]
+        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
+        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
+
+        # Account Type lookup
+        accountType                                        = rowData[15-1]
+        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
+
+        if accountTypeXRef is not None:
+            record["ACCOUNT TYPE"]                         = accountTypeXRef
+            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
+        else:
+            record["ACCOUNT TYPE"]                         = accountType
+            record["NEW ACCOUNT TYPE"]                     = ""
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+        record["SECURITY NUMBER"]                          = rowData[16-1:22]
+
+        filler1                                            = rowData[23-1:28]
+        if filler1 == " " * 6:
+            record["FILLER 1"]                             = filler1
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
+
+        record["TRID"]                                     = rowData[29-1]
+        record["SPIN "]                                    = rowData[30-1]
+        record["SECURITY DESC"]                            = rowData[31-1:60]
+        record["MATURITY OR EXPIRATION DATE"]              = rowData[61-1:69]
+        record["BOND INTEREST RATE"]                       = rowData[69-1:79]
+        record["FREQUENCY CODE"]                           = rowData[80-1]
+        record["CALL CODE"]                                = rowData[81-1]
+        record["DATED DATE"]                               = rowData[82-1:85]
+        record["ACCOUNT CHECK DIGIT"]                      = rowData[86-1]
+        record["FILLER 9"]                                 = rowData[87-1:349]
+        
+        filler9                                            = rowData[87-1:349]
+        if filler9 == " " * 263:
+            record["FILLER 9"]                             = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[87:349] (9)#Filler containing data [{filler9}]")
+
+    elif rowType == "21":
+
+        # When-Issue Customer Header
+        rowType = "When-Issue Customer Header"
+        accountChekckDigit                                 = rowData[267-1]
+
+        record["CLIENT NUMBER"]                            = rowData[1-1:3]
+        record["BRANCH NUMBER"]                            = rowData[4-1:6]
+        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
+        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
+
+        # Account Type lookup
+        accountType                                        = rowData[15-1]
+        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
+
+        if accountTypeXRef is not None:
+            record["ACCOUNT TYPE"]                         = accountTypeXRef
+            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
+        else:
+            record["ACCOUNT TYPE"]                         = accountType
+            record["NEW ACCOUNT TYPE"]                     = ""
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+        record["SECURITY NUMBER"]                          = rowData[16-1:22]
+
+        filler1                                            = rowData[23-1:28]
+        if filler1 == " " * 6:
+            record["FILLER 1"]                             = filler1
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
+
+        record["TRID"]                                     = rowData[29-1]
+        record["SPIN"]                                     = rowData[30-1]
+        record["SECURITY DESC"]                            = rowData[31-1:60]
+        record["DATE LAST ACTIVE"]                         = rowData[61-1:66]
+
+        filler2                                            = rowData[61-1:68]
+        if filler2 == " " * 8:
+            record["FILLER 2"]                             = filler2
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[61:68] (2)#Filler containing data [{filler2}]")
+
+        # Exchange Code lookup
+        exchangeCode                                       = rowData[69-1]
+        exchangeCodeXRef                                   = xrefExchLookup.get(exchangeCode)
+
+        if exchangeCodeXRef is not None:
+            record["EXCHANGE CODE"]                        = exchangeCodeXRef
+        else:
+            record["EXCHANGE CODE"]                        = exchangeCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#EXCHANGE CODE#No lookup value for [{exchangeCode}]")
+
+        record["SECURITY SPIN"]                            = rowData[70-1]
+        record["QUANTITY SIGN"]                            = rowData[71-1]
+        record["QUANTITY"]                                 = rowData[72-1:88]
+        record["CONTRACT PRICE (INTEGER)"]                 = rowData[89-1:96]
+        record["CONTRACT PRICE (FRACTION)"]                = rowData[97-1:104]
+        record["CONTRACT VALUE SIGN"]                      = rowData[105-1]
+        record["CONTRACT VALUE"]                           = rowData[106-1:122]
+        record["MARKET VALUE SIGN"]                        = rowData[123-1]
+        record["MARKET VALUE"]                             = rowData[124-1:140]
+
+        filler7                                            = rowData[141-1:142]
+        if filler7 == " " * 2:
+            record["FILLER 7"]                             = filler7
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[141:142] (7)#Filler containing data [{filler7}]")
+
+        record["RECORD FLAGS"]                             = rowData[143-1:144]
+        record["MARKET PRICE"]                             = rowData[145-1:161]
+        record["FILLER 8"]                                 = rowData[162-1:266]
+
+        filler8                                            = rowData[162-1:266]
+        if filler8 == " " * 105:
+            record["FILLER 8"]                             = filler8
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[162:266] (8)#Filler containing data [{filler8}]")
+
+        record["ACCOUNT CHECK DIGIT"]                      = rowData[267-1]
+
+        filler9                                            = rowData[268-1:349]
+        if filler9 == " " * 82:
+            record["FILLER 9"]                             = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[268:349] (9)#Filler containing data [{filler9}]")
+
+
+    elif rowType == "2A":
+
+        # When-Issue Trading Header
+        rowType = "When-Issue Trading Header"
+        accountChekckDigit                                 = rowData[267-1]
+
+        record["CLIENT NUMBER"]                            = rowData[1-1:3]
+        record["BRANCH NUMBER"]                            = rowData[4-1:6]
+        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
+        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
+
+        # Account Type lookup
+        accountType                                        = rowData[15-1]
+        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
+
+        if accountTypeXRef is not None:
+            record["ACCOUNT TYPE"]                         = accountTypeXRef
+            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
+        else:
+            record["ACCOUNT TYPE"]                         = accountType
+            record["NEW ACCOUNT TYPE"]                     = ""
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+        record["SECURITY NUMBER"]                          = rowData[16-1:22]
+
+        filler1                                            = rowData[23-1:28]
+        if filler1 == " " * 6:
+            record["FILLER 1"]                             = filler1
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
+
+        record["TRID"]                                     = rowData[29-1]
+        record["SPIN"]                                     = rowData[30-1]
+        record["SECURITY DESCRIPTION"]                     = rowData[31-1:60]
+        record["DATE LAST ACTIVE"]                         = rowData[61-1:66]
+
+        filler2                                            = rowData[61-1:68]
+        if filler2 == " " * 8:
+            record["FILLER 2"]                             = filler2
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[61:68] (2)#Filler containing data [{filler2}]")
+
+        # Exchange Code lookup
+        exchangeCode                                       = rowData[69-1]
+        exchangeCodeXRef                                   = xrefExchLookup.get(exchangeCode)
+
+        if exchangeCodeXRef is not None:
+            record["EXCHANGE CODE"]                        = exchangeCodeXRef
+        else:
+            record["EXCHANGE CODE"]                        = exchangeCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#EXCHANGE CODE#No lookup value for [{exchangeCode}]")
+
+        record["SECURITY SPIN"]                            = rowData[70-1]
+        record["QUANTITY SIGN"]                            = rowData[71-1]
+        record["QUANTITY"]                                 = rowData[72-1:88]
+        record["CONTRACT PRICE (INTEGER)"]                 = rowData[89-1:96]
+        record["CONTRACT PRICE (FRACTION)"]                = rowData[97-1:104]
+        record["CONTRACT VALUE SIGN"]                      = rowData[105-1]
+        record["CONTRACT VALUE"]                           = rowData[106-1:122]
+        record["MARKET VALUE SIGN"]                        = rowData[123-1]
+        record["MARKET VALUE"]                             = rowData[124-1:140]
+
+        filler7                                            = rowData[141-1:142]
+        if filler7 == " " * 2:
+            record["FILLER 7"]                             = filler7
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[141:142] (7)#Filler containing data [{filler7}]")
+
+        record["RECORD FLAGS"]                             = rowData[143-1:144]
+        record["MARKET PRICE"]                             = rowData[145-1:161]
+
+        filler8                                            = rowData[162-1:266]
+        if filler8 == " " * 105:
+            record["FILLER 8"]                             = filler8
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[162:266] (8)#Filler containing data [{filler8}]")
+
+        record["ACCOUNT CHECK DIGIT"]                      = rowData[267-1]
+
+        filler9                                            = rowData[268-1:349]
+        if filler9 == " " * 82:
+            record["FILLER 9"]                             = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[268:349] (9)#Filler containing data [{filler9}]")
+
+    elif rowType == "1A":
+
+        # Trading Analysis Trade Date
+        rowType = "Trading Analysis Trade Date"
+        accountChekckDigit                                 = rowData[349-1]
+
+        record["CLIENT NUMBER"]                            = rowData[1-1:3]
+        record["BRANCH NUMBER"]                            = rowData[4-1:6]
+        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
+        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
+
+        # Account Type lookup
+        accountType                                        = rowData[15-1]
+        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
+
+        if accountTypeXRef is not None:
+            record["ACCOUNT TYPE"]                         = accountTypeXRef
+            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
+        else:
+            record["ACCOUNT TYPE"]                         = accountType
+            record["NEW ACCOUNT TYPE"]                     = ""
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+        record["SECURITY NUMBER"]                          = rowData[16-1:22]
+
+        filler1                                            = rowData[23-1:28]
+        if filler1 == " " * 6:
+            record["FILLER 1"]                             = filler1
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
+
+        record["TRID"]                                     = rowData[29-1]
+        record["SPIN"]                                     = rowData[30-1]
+        record["SECURITY DESCRIPTION"]                     = rowData[31-1:60]
+        record["BOOK DLA"]                                 = rowData[61-1:66]
+        record["MARGIN DLA"]                               = rowData[67-1:72]
+
+        filler2                                            = rowData[73-1:76]
+        if filler2 == " " * 4:
+            record["FILLER 2"]                             = filler2
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[73:76] (2)#Filler containing data [{filler2}]")
+
+        # Exchange Code lookup
+        exchangeCode                                       = rowData[71-1]
+        exchangeCodeXRef                                   = xrefExchLookup.get(exchangeCode)
+
+        if exchangeCodeXRef is not None:
+            record["EXCHANGE CODE"]                        = exchangeCodeXRef
+        else:
+            record["EXCHANGE CODE"]                        = exchangeCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#EXCHANGE CODE#No lookup value for [{exchangeCode}]")
+
+        record["SECURITY SPIN"]                            = rowData[78-1]
+        record["T/D QUANTITY"]                             = rowData[79-1:95]
+        record["T/D QUANTITY SIGN"]                        = rowData[96-1]
+        record["T/D COST"]                                 = rowData[97-1:113]
+        record["T/D COST SIGN"]                            = rowData[114-1]
+        record["T/D UNREALIZED P/L"]                       = rowData[115-1:131]
+        record["T/D UNREALIZED P/L SIGN"]                  = rowData[132-1]
+        record["BOND FREQUENCY CODE"]                      = rowData[133-1:134]
+        record["DATE LAST CALCULATED"]                     = rowData[135-1:140]
+        record["HAIRCUT %"]                                = rowData[141-1:143]
+        record["HAIRCUT % SIGN"]                           = rowData[144-1]
+        record["CONCESSION"]                               = rowData[145-1:159]
+        record["CONCESSION SIGN"]                          = rowData[160-1]
+        record["HOUSE PRICE"]                              = rowData[161-1:175]
+        record["HOUSE PRICE SIGN"]                         = rowData[176-1]
+        record["T/D REALIZED P/L"]                         = rowData[177-1:193]
+        record["T/D REALIZED P/L SIGN"]                    = rowData[194-1]
+        record["FILLER 8"]                                 = rowData[195-1:202]
+
+        filler8                                            = rowData[195-1:202]
+        if filler8 == " " * 8:
+            record["FILLER 8"]                             = filler8
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[195:202] (8)#Filler containing data [{filler8}]")
+
+        record["RECORD FLAGS"]                             = rowData[203-1:206]
+        record["MARKET PRICE"]                             = rowData[207-1:221]
+        record["IDA SIGN"]                                 = rowData[222-1]
+        record["IDA"]                                      = rowData[223-1:226]
+
+        # Security Class Code lookup
+        secClassCode                                       = rowData[228-1:234]
+        secClassCodeXRef                                   = xrefSecClassCodeLookup.get(secClassCode[1-1])
+
+        if secClassCodeXRef is not None:
+            record["MSD CLASS CODE"]                       = secClassCodeXRef
+        else:
+            record["MSD CLASS CODE"]                       = secClassCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#MSD CLASS CODE#No lookup value for [{secClassCode}]")
+
+        filler9                                            = rowData[234-1:348]
+        if filler9 == " " * 115:
+            record["FILLER 9"]                             = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[234:348] (9)#Filler containing data [{filler9}]")
+
+        record["ACCOUNT CHECK DIGIT"]                      = rowData[349-1]
+        
+    elif rowType == "1B":
+
+        # Trading Analysis Settlement Date
+        rowType = "Trading Analysis Settlement Date"
+        accountChekckDigit                                 = rowData[267-1]
+
+        record["CLIENT NUMBER"]                            = rowData[1-1:3]
+        record["BRANCH NUMBER"]                            = rowData[4-1:6]
+        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
+        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
+
+        # Account Type lookup
+        accountType                                        = rowData[15-1]
+        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
+
+        if accountTypeXRef is not None:
+            record["ACCOUNT TYPE"]                         = accountTypeXRef
+            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
+        else:
+            record["ACCOUNT TYPE"]                         = accountType
+            record["NEW ACCOUNT TYPE"]                     = ""
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+        record["SECURITY NUMBER"]                          = rowData[16-1:22]
+
+        filler1                                            = rowData[23-1:28]
+        if filler1 == " " * 6:
+            record["FILLER 1"]                             = filler1
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
+
+        record["TRID"]                                     = rowData[29-1]
+        record["SPIN"]                                     = rowData[30-1]
+        record["SECURITY DESCRIPTION"]                     = rowData[31-1:60]
+        record["OPTION EXPIRATION DATE"]                   = rowData[61-1:66]
+
+        filler2                                            = rowData[67-1:69]
+        if filler2 == " " * 3:
+            record["FILLER 2"]                             = filler2
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[67:69] (2)#Filler containing data [{filler2}]")
+
+        record["INTEREST FREQUENCY"]                       = rowData[70-1]
+        record["S/D QUANTITY"]                             = rowData[71-1:87]
+        record["S/D QUANTITY SIGN"]                        = rowData[88-1]
+        record["S/D COST"]                                 = rowData[89-1:105]
+        record["S/D COST SIGN"]                            = rowData[106-1]
+        record["MEMO INTEREST CHARGE"]                     = rowData[107-1:117]
+        record["MEMO INTEREST CHARGE SIGN"]                = rowData[118-1]
+        record["DIVIDEND/INTEREST"]                        = rowData[119-1:129]
+        record["DIVIDEND/INTEREST SIGN"]                   = rowData[130-1]
+        record["GROSS CREDIT"]                             = rowData[131-1:141]
+        record["GROSS CREDIT SIGN"]                        = rowData[142-1]
+        record["EARNED INTEREST"]                          = rowData[143-1:153]
+        record["EARNED INTEREST SIGN"]                     = rowData[154-1]
+        record["INTEREST RATE"]                            = rowData[155-1:165]
+        record["INTEREST RATE SIGN"]                       = rowData[166-1]
+        record["S/D REALIZED P/L"]                         = rowData[167-1:183]
+        record["S/D REALIZED P/L SIGN"]                    = rowData[184-1]
+
+        filler7                                            = rowData[185-1:203]
+        if filler7 == " " * 19:
+            record["FILLER 7"]                             = filler7
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[185:203] (7)#Filler containing data [{filler7}]")
+
+        record["IDA"]                                      = rowData[204-1:207]
+
+        filler8                                            = rowData[208-1:266]
+        if filler8 == " " * 59:
+            record["FILLER 8"]                             = filler8
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[208:266] (8)#Filler containing data [{filler8}]")
+
+        record["ACCOUNT CHECK DIGIT"]                      = rowData[267-1]
+
+        filler9                                            = rowData[268-1:349]
+        if filler9 == " " * 82:
+            record["FILLER 9"]                             = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[268:349] (9)#Filler containing data [{filler9}]")
+
+    elif rowType == "2B":
+
+        # When-Issue Trading Trailer
+        rowType = "When-Issue Trading Trailer"
+        accountChekckDigit                                 = rowData[267-1]
+
+        record["CLIENT NUMBER"]                            = rowData[1-1:3]
+        record["BRANCH NUMBER"]                            = rowData[4-1:6]
+        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
+        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
+
+        # Account Type lookup
+        accountType                                        = rowData[15-1]
+        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
+
+        if accountTypeXRef is not None:
+            record["ACCOUNT TYPE"]                         = accountTypeXRef
+            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
+        else:
+            record["ACCOUNT TYPE"]                         = accountType
+            record["NEW ACCOUNT TYPE"]                     = ""
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+        record["SECURITY NUMBER"]                          = rowData[16-1:22]
+
+        filler1                                            = rowData[23-1:28]
+        if filler1 == " " * 6:
+            record["FILLER 1"]                             = filler1
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
+
+        record["TRID"]                                     = rowData[29-1]
+        record["SPIN"]                                     = rowData[30-1]
+        record["SECURITY DESCRIPTION"]                     = rowData[31-1:60]
+        record["OPTION EXPIRATION DATE"]                   = rowData[61-1:66]
+
+        filler2                                            = rowData[67-1:69]
+        if filler2 == " " * 3:
+            record["FILLER 2"]                             = filler2
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[67:69] (2)#Filler containing data [{filler2}]")
+
+        record["INTEREST FREQUENCY"]                       = rowData[70-1]
+        record["INTEREST FREQUENCY SIGN"]                  = rowData[71-1]
+        record["S/D QUANTITY"]                             = rowData[72-1:88]
+        record["S/D QUANTITY SIGN"]                        = rowData[89-1]
+        record["S/D COST"]                                 = rowData[90-1:106]
+        record["S/D COST SIGN"]                            = rowData[107-1]
+        record["MEMO INTEREST CHARGE"]                     = rowData[108-1:116]
+        record["MEMO INTEREST CHARGE SIGN"]                = rowData[117-1]
+        record["DIVIDEND/INTEREST"]                        = rowData[118-1:126]
+        record["DIVIDEND/INTEREST SIGN"]                   = rowData[127-1]
+        record["GROSS CREDIT"]                             = rowData[128-1:136]
+        record["GROSS CREDIT SIGN"]                        = rowData[137-1]
+        record["EARNED INTEREST"]                          = rowData[138-1:146]
+        record["EARNED INTEREST SIGN"]                     = rowData[147-1]
+        record["INTEREST RATE"]                            = rowData[148-1:159]
+        record["INTEREST RATE SIGN"]                       = rowData[160-1]
+        record["S/D REALIZED P/L"]                         = rowData[161-1:175]
+        record["S/D REALIZED P/L SIGN"]                    = rowData[176-1]
+
+        filler7                                            = rowData[177-1:203]
+        if filler7 == " " * 27:
+            record["FILLER 7"]                             = filler7
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[177:203] (7)#Filler containing data [{filler7}]")
+
+        record["IDA"]                                      = rowData[204-1]
+
+        filler8                                            = rowData[208-1:266]
+        if filler8 == " " * 59:
+            record["FILLER 8"]                             = filler8
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[208:266] (8)#Filler containing data [{filler8}]")
+
+        record["ACCOUNT CHECK DIGIT"]                      = rowData[267-1]
+
+        filler9                                            = rowData[268-1:349]
+        if filler9 == " " * 82:
+            record["FILLER 9"]                             = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[268:349] (9)#Filler containing data [{filler9}]")
+
+    elif rowType == "7 ":
+
+        if c16 != " ":
+
+            # Customer Balance, F/Type
+            rowType = "Customer Balance, F/Type"
+            accountChekckDigit                                 = rowData[349-1]
+
+            record["CLIENT NUMBER"]                            = rowData[1-1:3]
+            record["BRANCH NUMBER"]                            = rowData[4-1:6]
+            record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
+            record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
+
+            # Account Type lookup
+            accountType                                        = rowData[15-1]
+            accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
+
+            if accountTypeXRef is not None:
+                record["ACCOUNT TYPE"]                         = accountTypeXRef
+                record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
+            else:
+                record["ACCOUNT TYPE"]                         = accountType
+                record["NEW ACCOUNT TYPE"]                     = ""
+                rowStatus = -3
+                exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+            record["HIGH−VALUE"]                               = rowData[16-1]
+            record["DATE LAST ACTIVE (BKPG / MRGN)"]           = rowData[17-1:22]
+
+            filler1                                            = rowData[23-1:28]
+            if filler1 == " " * 6:
+                record["FILLER 1"]                             = filler1
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
+
+            record["TRID"]                                     = rowData[29-1]
+            record["SPIN"]                                     = rowData[30-1]
+            record["CUSTOMER SHORT NAME"]                      = rowData[31-1:50]
+            record["CUSTOMER INSTRUCTIONS"]                    = rowData[51-1:52]
+            record["ACCOUNT CODE"]                             = rowData[53-1:55]
+            record["RR CODE"]                                  = rowData[56-1:58]
+
+            filler2                                            = rowData[59-1]
+            if filler2 == " " * 1:
+                record["FILLER 2"]                             = filler2
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[59] (2)#Filler containing data [{filler2}]")
+
+            record["S/D BALANCE SIGN"]                         = rowData[60-1]
+            record["S/D BALANCE"]                              = rowData[61-1:77]
+            record["T/D BALANCE/MARKET VALUE SIGN"]            = rowData[78-1]
+            record["T/D BALANCE/MARKET VALUE"]                 = rowData[79-1:95]
+            record["OUTSTANDING CALL / DAY−2 CALL SIGN"]       = rowData[96-1]
+            record["OUTSTANDING CALL / DAY−2 CALL"]            = rowData[97-1:113]
+            record["SMA CALL/DAY−3 CALL SIGN"]                 = rowData[114-1]
+            record["SMA CALL/DAY−3 CALL"]                      = rowData[115-1:131]
+            record["BUYING POWER/DAY−5 CALL SIGN"]             = rowData[132-1]
+            record["BUYING POWER/DAY−5 CALL"]                  = rowData[133-1:149]
+            record["MARGIN/CASH DEFICIENCY SIGN"]              = rowData[150-1]
+            record["MARGIN/CASH DEFICIENCY"]                   = rowData[151-1:167]
+            record["MARGIN INTEREST ACCUMULATION SIGN"]        = rowData[168-1]
+            record["MARGIN INTEREST ACCUMULATION"]             = rowData[169-1:185]
+            record["HOUSE EXCESS SIGN"]                        = rowData[186-1]
+            record["HOUSE EXCESS"]                             = rowData[187-1:203]
+            record["ISIP INDEX COST SIGN"]                     = rowData[204-1]
+            record["ISIP INDEX COST"]                          = rowData[225-1:221]
+            record["TBD SIGN"]                                 = rowData[222-1]
+            record["TBD"]                                      = rowData[223-1:240]
+
+            filler9                                            = rowData[241-1:348]
+            if filler9 == " " * 108:
+                record["FILLER 9"]                             = filler9
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[241:348] (9)#Filler containing data [{filler9}]")
+
+            record["ACCOUNT CHECK DIGIT"]                      = rowData[349-1]
+            
+        else:
+
+            # Loan Account
+            rowType = "Loan Account"
+            accountChekckDigit                                 = '~'
+
+            record["CLIENT NUMBER"]                            = rowData[1-1:3]
+            record["BRANCH NUMBER"]                            = rowData[4-1:6]
+            record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
+            record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
+
+            # Account Type lookup
+            accountType                                        = rowData[15-1]
+            accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
+
+            if accountTypeXRef is not None:
+                record["ACCOUNT TYPE"]                         = accountTypeXRef
+                record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
+            else:
+                record["ACCOUNT TYPE"]                         = accountType
+                record["NEW ACCOUNT TYPE"]                     = ""
+                rowStatus = -3
+                exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+            filler1                                            = rowData[16-1]
+            if filler1 == " " * 1:
+                record["FILLER 1"]                             = filler1
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[16] (1)#Filler containing data [{filler1}]")
+            
+            record["DATE LAST ACTIVE (BKPG / MRGN)"]           = rowData[17-1:28]
+            record["TRID"]                                     = rowData[29-1]
+            record["SPIN"]                                     = rowData[30-1]
+            record["ACCOUNT NAME"]                             = rowData[31-1:50]
+            record["ACCOUNT CODES"]                            = rowData[51-1:53]
+
+            filler2                                            = rowData[54-1:59]
+            if filler2 == " " * 6:
+                record["FILLER 2"]                             = filler2
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[54:59] (2)#Filler containing data [{filler2}]")
+
+            record["S/D BALANCE SIGN"]                         = rowData[60-1]
+            record["S/D BALANCE"]                              = rowData[61-1:77]
+            record["MARKET VALUE OF SECURITIES SIGN"]          = rowData[78-1]
+            record["MARKET VALUE OF SECURITIES"]               = rowData[79-1:95]
+            record["RATIO MV−TO−S/D BALANCE SIGN"]             = rowData[96-1]
+            record["RATIO MV−TO−S/D BALANCE"]                  = rowData[97-1:113]
+
+            filler9                                            = rowData[114-1:349]
+            if filler9 == " " * 236:
+                record["FILLER 9"]                             = filler9
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[114:349] (9)#Filler containing data [{filler9}]")
+
+    elif rowType == "71":
+
+        # Customer Balance, Last in Account
+        rowType = "Customer Balance, Last in Account"
+        accountChekckDigit                                 = rowData[349-1]
+
+        record["CLIENT NUMBER"]                            = rowData[1-1:3]
+        record["BRANCH NUMBER"]                            = rowData[4-1:6]
+        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
+        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
+
+        # Account Type lookup
+        accountType                                        = rowData[15-1]
+        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
+
+        if accountTypeXRef is not None:
+            record["ACCOUNT TYPE"]                         = accountTypeXRef
+            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
+        else:
+            record["ACCOUNT TYPE"]                         = accountType
+            record["NEW ACCOUNT TYPE"]                     = ""
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+        record["HIGH−VALUE (BPS Internal use only)"]       = rowData[16-1]
+        record["DATE LAST ACTIVE"]                         = rowData[17-1:22]
+        record["DATE"]                                     = rowData[23-1:28]
+        record["TRID"]                                     = rowData[29-1]
+        record["SPIN"]                                     = rowData[30-1]
+        record["CUSTOMER SHORT NAME"]                      = rowData[31-1:50]
+        record["CUSTOMER INSTRUCTIONS"]                    = rowData[51-1:52]
+        record["ACCOUNT CODE"]                             = rowData[53-1:55]
+        record["RR CODE"]                                  = rowData[56-1:58]
+
+        filler2                                            = rowData[59-1]
+        if filler2 == " " * 1:
+            record["FILLER 2"]                             = filler2
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[59] (2)#Filler containing data [{filler2}]")
+
+        record["S/D BALANCE SIGN"]                         = rowData[60-1]
+        record["S/D BALANCE"]                              = rowData[61-1:77]
+        record["T/D BALANCE/MARKET VALUE SIGN"]            = rowData[78-1]
+        record["T/D BALANCE/MARKET VALUE"]                 = rowData[79-1:95]
+        record["TODAYS CALL/DAY−1 CALL SIGN"]              = rowData[96-1]
+        record["TODAYS CALL/DAY−1 CALL"]                   = rowData[97-1:113]
+        record["OUTSTANDING CALL / DAY−2 CALL SIGN"]       = rowData[114-1]
+        record["OUTSTANDING CALL / DAY−2 CALL"]            = rowData[115-1:131]
+        record["SMA CALL/DAY−3 CALL SIGN"]                 = rowData[132-1]
+        record["SMA CALL/DAY−3 CALL"]                      = rowData[133-1:149]
+        record["HOUSE CALL/DAY−4 CALL SIGN"]               = rowData[150-1]
+        record["HOUSE CALL/DAY−4 CALL"]                    = rowData[151-1:167]
+        record["BUYING POWER/DAY−5 CALL SIGN"]             = rowData[168-1]
+        record["BUYING POWER/DAY−5 CALL"]                  = rowData[169-1:185]
+        record["CASH AVAILABLE OR EQUITY PERCENT SIGN"]    = rowData[186-1]
+        record["CASH AVAILABLE OR EQUITY PERCENT"]         = rowData[187-1:203]
+        record["MARGIN/CASH DEFICIENCY SIGN"]              = rowData[204-1]
+        record["MARGIN/CASH DEFICIENCY"]                   = rowData[203-1:221]
+        record["TYPE 5 BALANCE IN TYPE 2 A/C SIGN"]        = rowData[222-1]
+        record["TYPE 5 BALANCE IN TYPE 2 A/C"]             = rowData[223-1:239]
+
+        filler7                                            = rowData[240-1:249]
+        if filler7 == " " * 10:
+            record["FILLER 7"]                             = filler7
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[240:249] (7)#Filler containing data [{filler7}]")
+
+        record["MARGIN INTEREST ACCUMULATION SIGN"]        = rowData[250-1]
+        record["MARGIN INTEREST ACCUMULATION"]             = rowData[251-1:261]
+        record["HOUSE EXCESS SIGN"]                        = rowData[262-1]
+        record["HOUSE EXCESS"]                             = rowData[262-1:279]
+        record["ISIP INDEX COST SIGN"]                     = rowData[280-1]
+        record["ISIP INDEX COST"]                          = rowData[281-1:297]
+        record["FILLER 8"]                                 = rowData[297-1:303]
+
+        filler8                                            = rowData[297-1:303]
+        if filler8 == " " * 7:
+            record["FILLER 8"]                             = filler8
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[297:303] (8)#Filler containing data [{filler8}]")
+
+        record["LANGUAGE"]                                 = rowData[304-1]
+
+        filler9                                            = rowData[305-1:320]
+        if filler9 == " " * 16:
+            record["FILLER 9"]                             = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[305:320] (9)#Filler containing data [{filler9}]")
+
+        # Account Range Indicator Mapping
+        accountRangeIncicator                              = rowData[297-1]
+        accountRangeIncicatorMap                           = mapTransSideIncicator.get(accountRangeIncicator)
+
+        if accountRangeIncicatorMap is not None:
+            record["ACCOUNT RANGE INDICATOR"]              = accountRangeIncicatorMap
+        else:
+            record["ACCOUNT RANGE INDICATOR"]              = accountRangeIncicator
+            rowStatus = -3
+
+        record["TELEPHONE NUMBER"]                         = rowData[322-1:330]
+        record["ISIP NET P/S SIGN"]                        = rowData[331-1]
+        record["ISIP NET P/S"]                             = rowData[332-1:348]
+        record["ACCOUNT CHECK DIGIT"]                      = rowData[349-1]
+
+    elif rowType == "91":
+    
+        # Client Totals Header
+        rowType = "Client Totals Header"
+
+    elif rowType == "92":
+    
+        # Client Totals Trailer
+        rowType = "Client Totals Trailer"
+
+    elif rowType == "00":
+    
+        # Date Record
+        rowType = "Date Record"
+
+    else:
+        # Bad structure of the record
+        rowType = "<Unrecognized>"
+        rowStatus = -2
+        exceptions.append(f"INVALID_STRUCTURE#ROW TYPE[TRID={trid},SPIN={spin}]#Invalid row type")
+
+    record["_ROW_TYPE"]                                    = rowType
+    record["_ROW_STATUS"]                                  = rowStatus
+    record["_ROW_EXCEPTIONS"]                              = exceptions
     
     return record
 
@@ -391,17 +1292,17 @@ def CreateSourceRowStructure(record):
 
 mapped_source_dyf = Map.apply(frame = source_dyf, f = CreateSourceRowStructure)
 
-mappingErrCount = mapped_source_dyf.stageErrorsCount()
-if mappingErrCount > 0:
+mapStructErrCount = mapped_source_dyf.stageErrorsCount()
+if mapStructErrCount > 0:
     mapped_source_err_df = mapped_source_dyf.errorsAsDynamicFrame().repartition(1).toDF()
     mapped_source_err_df.write.mode("append").json(errorPath)
     
-    RenameDataLakeFile(bucketURI,errorPath, errorPath, "V068.RowStructureErrors.txt")
+    RenameDataLakeFile(bucketURI, errorPath, errorPath, mapStructErrFileName)
     #raise Exception(f"Errors [{mappingErrCount}] during record structure mapping.")
 
-#print(mappingErrCount)
-errors_source_dyf = mapped_source_dyf.errorsAsDynamicFrame()
-errors_source_dyf.show()
+print(mapStructErrCount)
+#errors_source_dyf = mapped_source_dyf.errorsAsDynamicFrame()
+#errors_source_dyf.show()
 #---------------------------------------------------------------------------------------------------------------------
 # Split DynamicFrame to the default and the rejected outputs
 #---------------------------------------------------------------------------------------------------------------------
@@ -439,141 +1340,549 @@ transformed_dyf   = SelectFromCollection.apply(dfc=conditionalRouter, key="outpu
 
 # Rows rejected -> rejected_dyf
 rejected_dyf = SelectFromCollection.apply(dfc=conditionalRouter, key="output_rejected", transformation_ctx="output_rejected")
-transformed_dyf.show()
-rejected_dyf.show()
+
 #---------------------------------------------------------------------------------------------------------------------
-# Form each output row structure
+# Form each output row
 #---------------------------------------------------------------------------------------------------------------------
 @log_errors
 def CreateOutputRowStructure(record):
-    
+
     rowData   = record["value"]
     rowType   = record["_ROW_TYPE"]
+    
+    if rowType == "Customer Position Header":
 
-    if rowType == "Header record":
-
-        # Header record
+        # Customer Position Header 
+        # Fields:     48 in/49 out
+        # Transforms: 5
 
         record["_ROW_DATA"] = "|".join([
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["FOREIGN CURRENCY CODE"],
+            record["ACCOUNT TYPE"],
+            record["NEW ACCOUNT TYPE"],
 
-            record["FILLER 0"],
-            record["CLIENT"],
+            record["SECURITY NUMBER"],
             record["FILLER 1"],
-            record["RECORD TYPE"],
-            record["DATE="],
-            record["FILE CREATION DATE & TIME"],
-            record["ADP-SEC-POSITION"],
-            record["FILLER 9"]
-
-        ])
-
-    elif rowType == "Memo H record":
-    
-        # Memo H record
-        record["_ROW_DATA"] = "|".join([
-
-            record["FILLER 0"],
-            record["CLIENT"],
-            record["BRANCH"],
-            record["ACCOUNT"],
-            record["CURRENCY"],
-            record["TYPE"],
-            record["CHKDIG"],
-            record["NEW TYPE"],
-            record["NEW TYPE"],
-            record["ADP SECURITY CODE"],
-            record["RECORD TYPE 1"],
-            record["RR"],
-            record["TD QUANTITY"],
-            record["TD QUANTITY SGN"],
-            record["SD QUANTITY"],
-            record["SD QUANTITY SGN"],
-            record["MEMO COUNT"],
-            record["MEMO SB QUANTITY"],
-            record["MEMO SB QUANTITY SGN"],
-            record["MEMO SD QUANTITY"],
-            record["MEMO SD QUANTITY SGN"],
-            record["MEMO TM QUANTITY"],
-            record["MEMO TM QUANTITY SGN"],
-            record["FILLER 9"]
-
-        ])
-
-    elif rowType == "Memo T record":
-
-        # Memo T record
-        record["_ROW_DATA"] = "|".join([
-
-            record["FILLER 0"],
-            record["CLIENT"],
-            record["BRANCH"],
-            record["ACCOUNT"],
-            record["CURRENCY"],
-            record["TYPE"],
-            record["CHKDIG"],
-            record["NEW TYPE"],
-            record["NEW TYPE"],
-            record["ADP SECURITY CODE"],
-            record["RECORD TYPE Z"],
-            record["MEMO TF QUANTITY"],
-            record["MEMO TF QUANTITY SIGN"],
-            record["MEMO TR QUANTITY"],
-            record["MEMO TR QUANTITY SIGN"],
-            record["MEMO TL QUANTITY"],
-            record["MEMO TL QUANTITY SIGN"],
-            record["MEMO SK QUANTITY"],
-            record["MEMO SK QUANTITY SIGN"],
-            record["MEMO SN QUANTITY"],
-            record["MEMO SN QUANTITY SIGN"],
-            record["MEMO OD QUANTITY"],
-            record["MEMO OD QUANTITY SIGN"],
-            record["FILLER 9"]
-
-        ])
-
-    elif rowType == "Memo M record":
-
-        # Memo M record
-        record["_ROW_DATA"] = "|".join([
-
-            record["FILLER 0"],
-            record["CLIENT 068"],
-            record["BRANCH"],
-            record["ACCOUNT"],
-            record["CURRENCY"],
-            record["TYPE"],
-            record["CHKDIG"],
-            record["NEW TYPE"],
-            record["NEW TYPE"],
-            record["ADP SECURITY CODE"],
-            record["RECORD TYPE 3"],
-            record["MEMO OR QUANTITY"],
-            record["MEMO OR QUANTITY SIGN"],
-            record["MEMO TB QUANTITY"],
-            record["MEMO TB QUANTITY SIGN"],
-            record["MEMO TC QUANTITY"],
-            record["MEMO TC QUANTITY SIGN"],
+            record["TRID"],
+            record["SPIN"],
+            record["SECURITY DESCRIPTION LINE 1"],
+            record["DATE LAST ACTIVE"],
+            record["MEMO FLAGS (0000)"],
+            record["EXCHANGE CODE"],
+            record["SECURITY SPIN"],
+            record["TRADE DATE QUANTITY SIGN"],
+            record["TRADE DATE QUANTITY"],
+            record["SETTLEMENT DATE QUANTITY SIGN"],
+            record["SETTLEMENT DATE QUANTITY"],
+            record["MEMO FIELD 1 SIGN"],
+            record["MEMO FIELD 1"],
+            record["MEMO FIELD 2 SIGN"],
+            record["MEMO FIELD 2"],
+            record["MEMO FIELD 3 SIGN"],
+            record["MEMO FIELD 3"],
+            record["MEMO FIELD 4 SIGN"],
+            record["MEMO FIELD 4"],
+            record["SHORT VS BOX SIGN"],
+            record["SHORT VS BOX"],
+            record["NUMBER OF SHORT DAYS SIGN"],
+            record["NUMBER OF SHORT DAYS"],
+            record["HOUSE REQUIREMENT % SIGN"],
+            record["HOUSE REQUIREMENT %"],
+            record["RECORD FLAGS"],
+            record["MARKET PRICE"],
+            record["IDA"],
+            record["MSD CLASS CODE"],
+            record["MARKET VALUE SIGN"],
+            record["MARKET VALUE"],
+            record["MATURITY DATE"],
+            record["HOUSE REQUIREMENT AMOUNT SIGN"],
+            record["HOUSE REQUIREMENT AMOUNT"],
+            record["S/D REQUIREMENT AMOUNT SIGN"],
+            record["S/D REQUIREMENT AMOUNT"],
+            record["PREFERRED SEG SECURITY FLAG"],
+            record["ACCOUNT RANGE INDICATOR"],
+            record["FILLER 8"],
+            record["ACCOUNT CHECK DIGIT"],
             record["FILLER 9"]
         ])
 
-    elif rowType == "Trailer record":
-    
-        # Trailer record
+    elif rowType == "Option Header":
+
+        # Option Header
+        # Fields:     30 in/31 out
+        # Transforms: 7
+
         record["_ROW_DATA"] = "|".join([
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["FOREIGN CURRENCY CODE"],
+            record["ACCOUNT TYPE"],
+            record["NEW ACCOUNT TYPE"],
 
-            record["FILLER 0"],
-            record["CLIENT 068"],
-            record["RECORD TYPE"],
-            record["REC CTR"],
-            record["RECORD COUNT"],
+            record["UNDERLYING SECURITY NUMBER"],
+            record["OPTION BYTE"],
+            record["FILLER 1"],
+            record["TRID"],
+            record["SPIN"],
+            record["SECURITY DESCRIPTION"],
+            record["FILLER 2"],
+            record["OPTION SECURITY NUMBER"],
+            record["EXPIRATION CODE"],
+            record["OPTION CODE"],
+            record["EXCHANGE CODE"],
+            record["SECURITY SPIN"],
+            record["LONG QUANTITY SIGN"],
+            record["LONG QUANTITY"],
+            record["SHORT QUANTITY SIGN"],
+            record["SHORT QUANTITY"],
+            record["STRIKE PRICE"],
+            record["IDA"],
+            record["MSD CLASS CODE"],
+            record["FILLER 7"],
+            record["EXPIRATION DATE"],
+            record["FILLER 8"],
+            record["LAST DIGIT OF UNDERLYING SECURITY NUMBER"],
+            record["ACCOUNT CHECK DIGIT"],
             record["FILLER 9"]
+        ])
 
+    elif rowType == "Customer Position Trailer":
+
+        # Customer Position Trailer
+        # Fields:     17 in/18 out
+        # Transforms: 2
+
+        record["_ROW_DATA"] = "|".join([
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["FOREIGN CURRENCY CODE"],
+            record["ACCOUNT TYPE"],
+            record["NEW ACCOUNT TYPE"],
+            
+            record["SECURITY NUMBER"],
+            record["FILLER 1"],
+            record["TRID"],
+            record["SPIN"],
+            record["SECURITY DESCRIPTION LINE 2"],
+            record["MATURITY OR EXPIRATION DATE"],
+            record["BOND INTEREST RATE"],
+            record["FREQUENCY CODE"],
+            record["CALL CODE"],
+            record["DATED DATE"],
+            record["ACCOUNT CHECK DIGIT"],
+            record["FILLER 9"]
+        ])
+
+    elif rowType == "When-Issue Customer Trailer":
+
+        # When-Issue Customer Trailer
+        # Fields:     17 in/18 out
+        # Transforms: 2
+
+        record["_ROW_DATA"] = "|".join([
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["FOREIGN CURRENCY CODE"],
+            record["ACCOUNT TYPE"],
+            record["NEW ACCOUNT TYPE"],
+            
+            record["SECURITY NUMBER"],
+            record["FILLER 1"],
+            record["TRID"],
+            record["SPIN "],
+            record["SECURITY DESC"],
+            record["MATURITY OR EXPIRATION DATE"],
+            record["BOND INTEREST RATE"],
+            record["FREQUENCY CODE"],
+            record["CALL CODE"],
+            record["DATED DATE"],
+            record["ACCOUNT CHECK DIGIT"],
+            record["FILLER 9"]
+        ])
+
+    elif rowType == "When-Issue Customer Header":
+
+        # When-Issue Customer Header
+        # Fields:     28 in/29 out
+        # Transforms: 3
+
+        record["_ROW_DATA"] = "|".join([
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["FOREIGN CURRENCY CODE"],
+            record["ACCOUNT TYPE"],
+            record["NEW ACCOUNT TYPE"],
+            
+            record["SECURITY NUMBER"],
+            record["FILLER 1"],
+            record["TRID"],
+            record["SPIN"],
+            record["SECURITY DESC"],
+            record["DATE LAST ACTIVE"],
+            record["FILLER 2"],
+            record["EXCHANGE CODE"],
+            record["SECURITY SPIN"],
+            record["QUANTITY SIGN"],
+            record["QUANTITY"],
+            record["CONTRACT PRICE (INTEGER)"],
+            record["CONTRACT PRICE (FRACTION)"],
+            record["CONTRACT VALUE SIGN"],
+            record["CONTRACT VALUE"],
+            record["MARKET VALUE SIGN"],
+            record["MARKET VALUE"],
+            record["FILLER 7"],
+            record["RECORD FLAGS"],
+            record["MARKET PRICE"],
+            record["FILLER 8"],
+            record["ACCOUNT CHECK DIGIT"],
+            record["FILLER 9"]
         ])
         
+    elif rowType == "When-Issue Trading Header":
+
+        # When-Issue Trading Header
+        # Fields:     18 in/19 out
+        # Transforms: 3
+
+        record["_ROW_DATA"] = "|".join([
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["FOREIGN CURRENCY CODE"],
+            record["ACCOUNT TYPE"],
+            record["NEW ACCOUNT TYPE"],
+            record["SECURITY NUMBER"],
+            
+            record["FILLER 1"],
+            record["TRID"],
+            record["SPIN"],
+            record["SECURITY DESCRIPTION"],
+            record["DATE LAST ACTIVE"],
+            record["FILLER 2"],
+            record["EXCHANGE CODE"],
+            record["SECURITY SPIN"],
+            record["QUANTITY SIGN"],
+            record["QUANTITY"],
+            record["CONTRACT PRICE (INTEGER)"],
+            record["CONTRACT PRICE (FRACTION)"],
+            record["CONTRACT VALUE SIGN"],
+            record["CONTRACT VALUE"],
+            record["MARKET VALUE SIGN"],
+            record["MARKET VALUE"],
+            record["FILLER 7"],
+            record["RECORD FLAGS"],
+            record["MARKET PRICE"],
+            record["FILLER 8"],
+            record["ACCOUNT CHECK DIGIT"],
+            record["FILLER 9"]
+        ])
+        
+    elif rowType == "Trading Analysis Trade Date":
+
+        # Trading Analysis Trade Date
+        # Fields:     39 in/40 out
+        # Transforms: 4
+
+        record["_ROW_DATA"] = "|".join([
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["FOREIGN CURRENCY CODE"],
+            record["ACCOUNT TYPE"],
+            record["NEW ACCOUNT TYPE"],
+            
+            record["SECURITY NUMBER"],
+            record["FILLER 1"],
+            record["TRID"],
+            record["SPIN"],
+            record["SECURITY DESCRIPTION"],
+            record["BOOK DLA"],
+            record["MARGIN DLA"],
+            record["FILLER 2"],
+            record["EXCHANGE CODE"],
+            record["SECURITY SPIN"],
+            record["T/D QUANTITY"],
+            record["T/D QUANTITY SIGN"],
+            record["T/D COST"],
+            record["T/D COST SIGN"],
+            record["T/D UNREALIZED P/L"],
+            record["T/D UNREALIZED P/L SIGN"],
+            record["BOND FREQUENCY CODE"],
+            record["DATE LAST CALCULATED"],
+            record["HAIRCUT %"],
+            record["HAIRCUT % SIGN"],
+            record["CONCESSION"],
+            record["CONCESSION SIGN"],
+            record["HOUSE PRICE"],
+            record["HOUSE PRICE SIGN"],
+            record["T/D REALIZED P/L"],
+            record["T/D REALIZED P/L SIGN"],
+            record["FILLER 8"],
+            record["RECORD FLAGS"],
+            record["MARKET PRICE"],
+            record["IDA SIGN"],
+            record["IDA"],
+            record["MSD CLASS CODE"],
+            record["FILLER 9"],
+            record["ACCOUNT CHECK DIGIT"]
+        ])
+        
+    elif rowType == "Trading Analysis Settlement Date":
+
+        # Trading Analysis Settlement Date
+        # Fields:     34 in/35 out
+        # Transforms: 2
+
+        record["_ROW_DATA"] = "|".join([
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["FOREIGN CURRENCY CODE"],
+            record["ACCOUNT TYPE"],
+            record["NEW ACCOUNT TYPE"],
+            
+            record["SECURITY NUMBER"],
+            record["FILLER 1"],
+            record["TRID"],
+            record["SPIN"],
+            record["SECURITY DESCRIPTION"],
+            record["OPTION EXPIRATION DATE"],
+            record["FILLER 2"],
+            record["INTEREST FREQUENCY"],
+            record["S/D QUANTITY"],
+            record["S/D QUANTITY SIGN"],
+            record["S/D COST"],
+            record["S/D COST SIGN"],
+            record["MEMO INTEREST CHARGE"],
+            record["MEMO INTEREST CHARGE SIGN"],
+            record["DIVIDEND/INTEREST"],
+            record["DIVIDEND/INTEREST SIGN"],
+            record["GROSS CREDIT"],
+            record["GROSS CREDIT SIGN"],
+            record["EARNED INTEREST"],
+            record["EARNED INTEREST SIGN"],
+            record["INTEREST RATE"],
+            record["INTEREST RATE SIGN"],
+            record["S/D REALIZED P/L"],
+            record["S/D REALIZED P/L SIGN"],
+            record["FILLER 7"],
+            record["IDA"],
+            record["FILLER 8"],
+            record["ACCOUNT CHECK DIGIT"],
+            record["FILLER 9"]
+        ])
+
+    elif rowType == "When-Issue Trading Trailer":
+
+        # When-Issue Trading Trailer
+        # Fields:     35 in/36 out
+        # Transforms: 2
+
+        record["_ROW_DATA"] = "|".join([
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["FOREIGN CURRENCY CODE"],
+            record["ACCOUNT TYPE"],
+            record["NEW ACCOUNT TYPE"],
+            
+            record["SECURITY NUMBER"],
+            record["FILLER 1"],
+            record["TRID"],
+            record["SPIN"],
+            record["SECURITY DESCRIPTION"],
+            record["OPTION EXPIRATION DATE"],
+            record["FILLER 2"],
+            record["INTEREST FREQUENCY"],
+            record["INTEREST FREQUENCY SIGN"],
+            record["S/D QUANTITY"],
+            record["S/D QUANTITY SIGN"],
+            record["S/D COST"],
+            record["S/D COST SIGN"],
+            record["MEMO INTEREST CHARGE"],
+            record["MEMO INTEREST CHARGE SIGN"],
+            record["DIVIDEND/INTEREST"],
+            record["DIVIDEND/INTEREST SIGN"],
+            record["GROSS CREDIT"],
+            record["GROSS CREDIT SIGN"],
+            record["EARNED INTEREST"],
+            record["EARNED INTEREST SIGN"],
+            record["INTEREST RATE"],
+            record["INTEREST RATE SIGN"],
+            record["S/D REALIZED P/L"],
+            record["S/D REALIZED P/L SIGN"],
+            record["FILLER 7"],
+            record["IDA"],
+            record["FILLER 8"],
+            record["ACCOUNT CHECK DIGIT"],
+            record["FILLER 9"]
+        ])
+        
+    elif rowType == "Customer Balance, F/Type":
+
+        # Customer Balance, F/Type
+        # Fields:     37 in/38 out
+        # Transforms: 2
+
+        record["_ROW_DATA"] = "|".join([
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["FOREIGN CURRENCY CODE"],
+            record["ACCOUNT TYPE"],
+            record["NEW ACCOUNT TYPE"],
+
+            record["HIGH−VALUE"],
+            record["DATE LAST ACTIVE (BKPG / MRGN)"],
+            record["FILLER 1"],
+            record["TRID"],
+            record["SPIN"],
+            record["CUSTOMER SHORT NAME"],
+            record["CUSTOMER INSTRUCTIONS"],
+            record["ACCOUNT CODE"],
+            record["RR CODE"],
+            record["FILLER 2"],
+            record["S/D BALANCE SIGN"],
+            record["S/D BALANCE"],
+            record["T/D BALANCE/MARKET VALUE SIGN"],
+            record["T/D BALANCE/MARKET VALUE"],
+            record["OUTSTANDING CALL / DAY−2 CALL SIGN"],
+            record["OUTSTANDING CALL / DAY−2 CALL"],
+            record["SMA CALL/DAY−3 CALL SIGN"],
+            record["SMA CALL/DAY−3 CALL"],
+            record["BUYING POWER/DAY−5 CALL SIGN"],
+            record["BUYING POWER/DAY−5 CALL"],
+            record["MARGIN/CASH DEFICIENCY SIGN"],
+            record["MARGIN/CASH DEFICIENCY"],
+            record["MARGIN INTEREST ACCUMULATION SIGN"],
+            record["MARGIN INTEREST ACCUMULATION"],
+            record["HOUSE EXCESS SIGN"],
+            record["HOUSE EXCESS"],
+            record["ISIP INDEX COST SIGN"],
+            record["ISIP INDEX COST"],
+            record["TBD SIGN"],
+            record["TBD"],
+            record["FILLER 9"],
+            record["ACCOUNT CHECK DIGIT"]
+        ])
+            
+    elif rowType == "Loan Account":
+
+        # Loan Account
+        # Fields:     19 in/20 out
+        # Transforms: 2
+
+        record["_ROW_DATA"] = "|".join([
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["FOREIGN CURRENCY CODE"],
+            record["ACCOUNT TYPE"],
+            record["NEW ACCOUNT TYPE"],
+
+            record["FILLER 1"],
+            record["DATE LAST ACTIVE (BKPG / MRGN)"],
+            record["TRID"],
+            record["SPIN"],
+            record["ACCOUNT NAME"],
+            record["ACCOUNT CODES"],
+            record["FILLER 2"],
+            record["S/D BALANCE SIGN"],
+            record["S/D BALANCE"],
+            record["MARKET VALUE OF SECURITIES SIGN"],
+            record["MARKET VALUE OF SECURITIES"],
+            record["RATIO MV−TO−S/D BALANCE SIGN"],
+            record["RATIO MV−TO−S/D BALANCE"],
+            record["FILLER 9"]
+        ])
+
+    elif rowType == "Customer Balance, Last in Account":
+
+        # Customer Balance, Last in Account
+        # Fields:     50 in/51 out
+        # Transforms: 3
+
+        record["_ROW_DATA"] = "|".join([
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["FOREIGN CURRENCY CODE"],
+            record["ACCOUNT TYPE"],
+            record["NEW ACCOUNT TYPE"],
+            
+            record["HIGH−VALUE (BPS Internal use only)"],
+            record["DATE LAST ACTIVE"],
+            record["DATE"],
+            record["TRID"],
+            record["SPIN"],
+            record["CUSTOMER SHORT NAME"],
+            record["CUSTOMER INSTRUCTIONS"],
+            record["ACCOUNT CODE"],
+            record["RR CODE"],
+            record["FILLER 2"],
+            record["S/D BALANCE SIGN"],
+            record["S/D BALANCE"],
+            record["T/D BALANCE/MARKET VALUE SIGN"],
+            record["T/D BALANCE/MARKET VALUE"],
+            record["TODAYS CALL/DAY−1 CALL SIGN"],
+            record["TODAYS CALL/DAY−1 CALL"],
+            record["OUTSTANDING CALL / DAY−2 CALL SIGN"],
+            record["OUTSTANDING CALL / DAY−2 CALL"],
+            record["SMA CALL/DAY−3 CALL SIGN"],
+            record["SMA CALL/DAY−3 CALL"],
+            record["HOUSE CALL/DAY−4 CALL SIGN"],
+            record["HOUSE CALL/DAY−4 CALL"],
+            record["BUYING POWER/DAY−5 CALL SIGN"],
+            record["BUYING POWER/DAY−5 CALL"],
+            record["CASH AVAILABLE OR EQUITY PERCENT SIGN"],
+            record["CASH AVAILABLE OR EQUITY PERCENT"],
+            record["MARGIN/CASH DEFICIENCY SIGN"],
+            record["MARGIN/CASH DEFICIENCY"],
+            record["TYPE 5 BALANCE IN TYPE 2 A/C SIGN"],
+            record["TYPE 5 BALANCE IN TYPE 2 A/C"],
+            record["FILLER 7"],
+            record["MARGIN INTEREST ACCUMULATION SIGN"],
+            record["MARGIN INTEREST ACCUMULATION"],
+            record["HOUSE EXCESS SIGN"],
+            record["HOUSE EXCESS"],
+            record["ISIP INDEX COST SIGN"],
+            record["ISIP INDEX COST"],
+            record["FILLER 8"],
+            record["LANGUAGE"],
+            record["FILLER 9"],
+            record["ACCOUNT RANGE INDICATOR"],
+            record["TELEPHONE NUMBER"],
+            record["ISIP NET P/S SIGN"],
+            record["ISIP NET P/S"],
+            record["ACCOUNT CHECK DIGIT"],
+        ])
+                
+    elif rowType == "Client Totals Header":
+    
+        # Client Totals Header
+        record["_ROW_DATA"] = record["value"]
+
+    elif rowType == "Client Totals Trailer":
+    
+        # Client Totals Trailer
+        record["_ROW_DATA"] = record["value"]
+
+    elif rowType == "Date Record":
+    
+        # Date Record
+        record["_ROW_DATA"] = record["value"]
+
     else:
         # Bad structure of the record
         record["_ROW_DATA"] = record["value"]
-
+    
     return record
 
 #---------------------------------------------------------------------------------------------------------------------
@@ -582,17 +1891,17 @@ def CreateOutputRowStructure(record):
 
 mapped_target_dyf = Map.apply(frame = transformed_dyf, f = CreateOutputRowStructure)
 
-outputMappingErrCount = mapped_target_dyf.stageErrorsCount()
-if outputMappingErrCount > 0:
+mapOutputErrCount = mapped_target_dyf.stageErrorsCount()
+if mapOutputErrCount > 0:
     mapped_target_err_df = mapped_target_dyf.errorsAsDynamicFrame().repartition(1).toDF()
     mapped_target_err_df.write.mode("append").json(errorPath)
     
-    RenameDataLakeFile(errorPath, errorPath, "V068.OutputRowMappingErrors.txt")
+    RenameDataLakeFile(bucketURI, errorPath, errorPath, mapOutputErrFileName)
     #raise Exception(f"Errors [{outputMappingErrCount}] during output record mapping.")
 
-#print(outputMappingErrCount)
-error_frame = mapped_target_dyf.errorsAsDynamicFrame()
-error_frame.show()
+print(mapOutputErrCount)
+#error_frame = target_dyf.errorsAsDynamicFrame()
+#error_frame.show()
 
 #---------------------------------------------------------------------------------------------------------------------
 # Output the target file
@@ -607,7 +1916,6 @@ output_target_df.show()
 output_target_df.select("_ROW_DATA").write.mode("append").option("lineSep","\r\n").text(targetPath)
 
 RenameDataLakeFile(bucketURI, targetPath, outputPath, targetFileName)
-output_target_df.show()
 
 #---------------------------------------------------------------------------------------------------------------------
 # Process and output the rejected file
@@ -632,7 +1940,6 @@ output_rejected_df = rejected_df.select(["_ROW_ID", "_ROW_TYPE", "_ROW_STATUS", 
 output_rejected_df.write.option("header","true").option("lineSep","\r\n").option("sep","|").mode("append").csv(rejectedPath)
 
 RenameDataLakeFile(bucketURI, rejectedPath, outputPath, rejectedFileName)
-output_rejected_df.show()
 
 #---------------------------------------------------------------------------------------------------------------------
 # Process and output the exceptions file
@@ -657,7 +1964,6 @@ exceptions_df = exceptions_split_df.select(
 exceptions_df.write.option("header","true").option("lineSep","\r\n").option("sep","|").mode("append").csv(exceptionsPath)
 
 RenameDataLakeFile(bucketURI, exceptionsPath, outputPath, exceptionsFileName)
-exceptions_df.show()
 
 #---------------------------------------------------------------------------------------------------------------------
 # Collect Audit data for source rows
@@ -689,19 +1995,15 @@ file_metadata_df = sparkSession.read.option("header", True).option("sep", '|').c
 transformed_type_rows_df = transformed_df.select("_ROW_TYPE").groupBy("_ROW_TYPE").count()
 
 # Joining with file specific metadata
-# changed ROW_TYPE to Record type to perform join
-transformed_meta_type_df = file_metadata_df.join(transformed_type_rows_df, file_metadata_df["Record type"] == transformed_type_rows_df["_ROW_TYPE"], "inner")
+transformed_meta_type_df = file_metadata_df.join(transformed_type_rows_df, file_metadata_df["ROW_TYPE"] == transformed_type_rows_df["_ROW_TYPE"], "inner")
 
 transformed_meta_type_df.show()
-file_metadata_df.show()
-#transformed_df.show()
-transformed_type_rows_df.show()
 
 transformed_audit_type_df = \
     transformed_meta_type_df.select([
         (lit("ROWS_TRANSFORMED")).alias("_REPORT_SECTION"), 
         (lit("ROW_TYPE")).alias("_REPORT_LEVEL"), 
-        (transformed_meta_type_df["Record type"]).alias("_ROW_TYPE"), 
+        (transformed_meta_type_df["ROW_TYPE"]).alias("_ROW_TYPE"), 
         (lit(None)).alias("_REPORT_LINE_LABEL"), 
         (transformed_meta_type_df["count"]).alias("_REPORT_RESULT_VALUE")
     ])
@@ -727,18 +2029,18 @@ transformed_audit_df.show()
 output_type_rows_df = output_target_df.select("_ROW_TYPE").groupBy("_ROW_TYPE").count()
 
 # Joining with file specific metadata
-output_meta_type_df = file_metadata_df.join(output_type_rows_df, file_metadata_df["Record type"] == output_type_rows_df["_ROW_TYPE"], "inner")
+output_meta_type_df = file_metadata_df.join(output_type_rows_df, file_metadata_df["ROW_TYPE"] == output_type_rows_df["_ROW_TYPE"], "inner")
 
 output_meta_type_df.show()
 output_audit_type_df = \
     output_meta_type_df.select([
         (lit("ROW_TYPE")).alias("_REPORT_LEVEL"), 
-        (output_meta_type_df["Record type"]).alias("_ROW_TYPE"), 
+        (output_meta_type_df["ROW_TYPE"]).alias("_ROW_TYPE"), 
         (lit(None)).alias("_REPORT_LINE_LABEL"), 
         (output_meta_type_df["count"]).alias("ROWS_OUT"),
-        (output_meta_type_df["count"] * output_meta_type_df["Fields in"]).alias("FIELDS_IN"), 
-        (output_meta_type_df["count"] * output_meta_type_df["Fields out"]).alias("FIELDS_OUT"), 
-        (output_meta_type_df["count"] * output_meta_type_df["Transforms"]).alias("TRANSFORMS")
+        (output_meta_type_df["count"] * output_meta_type_df["FIELDS_IN"]).alias("FIELDS_IN"), 
+        (output_meta_type_df["count"] * output_meta_type_df["FIELDS_OUT"]).alias("FIELDS_OUT"), 
+        (output_meta_type_df["count"] * output_meta_type_df["TRANSFORMS"]).alias("TRANSFORMS")
     ]) \
     .unpivot(
         ["_REPORT_LEVEL", "_ROW_TYPE", "_REPORT_LINE_LABEL"], 
@@ -857,13 +2159,14 @@ audit_metadata_type_df = audit_metadata_join_df.select([
         "REPORT_SECTION_NO",
         "REPORT_SECTION",
         "REPORT_LEVEL",
-        (coalesce(audit_metadata_join_df["Record type"], lit("<file>"))).alias("ROW_TYPE"),
+        (coalesce(audit_metadata_join_df["ROW_TYPE"], lit("<file>"))).alias("ROW_TYPE"),
         "REPORT_LINE_LABEL", 
         "REPORT_RESULT_LABEL",
-        (coalesce(audit_metadata_join_df["REPORT_SECTION_NO"], lit(0))).alias("ROW_TYPE_NO")
+        (coalesce(audit_metadata_join_df["ROW_TYPE_NO"], lit(0))).alias("ROW_TYPE_NO")
     ])
 
 audit_metadata_type_df.show()
+
 audit_merged_df = audit_metadata_type_df.join(all_audit_df, 
                                               (audit_metadata_type_df["REPORT_SECTION"] == all_audit_df["_REPORT_SECTION"]) & 
                                               (audit_metadata_type_df["REPORT_LEVEL"]   == all_audit_df["_REPORT_LEVEL"]) & 
@@ -899,7 +2202,6 @@ audit_report_df = audit_df \
 audit_report_df.write.option("header","true").option("lineSep","\r\n").option("sep","\t").option("quote", "").mode("append").csv(auditPath)
 
 RenameDataLakeFile(bucketURI, auditPath, outputPath, auditFileName)
-
 #---------------------------------------------------------------------------------------------------------------------
 # Output the tabular audit file
 #---------------------------------------------------------------------------------------------------------------------
@@ -932,7 +2234,6 @@ audit_report_tab_df = audit_report_pivot_df \
 audit_report_tab_df.write.option("header","true").option("lineSep","\r\n").option("sep","\t").option("quote", "").mode("append").csv(auditPath)
 
 RenameDataLakeFile(bucketURI, auditPath, outputPath, "TAB." + auditFileName)
-audit_report_tab_df.show()
 #---------------------------------------------------------------------------------------------------------------------
 # End of Job
 #---------------------------------------------------------------------------------------------------------------------
