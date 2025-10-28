@@ -1,0 +1,19 @@
+ROW_TYPE_NO|ROW_TYPE|FIELDS_IN|FIELDS_OUT|TRANSFORMS
+1|Header record|1|1|0
+2|Customer Position Header|48|49|5
+3|Option Header|30|31|7
+4|Customer Position Trailer|17|18|2
+5|When-Issue Customer Trailer|17|18|2
+6|When-Issue Customer Header|28|29|3
+7|When-Issue Trading Header|18|19|3
+8|Trading Analysis Trade Date|39|40|4
+9|Trading Analysis Settlement Date|34|35|2
+10|When-Issue Trading Trailer|35|36|2
+11|Customer Balance, F/Type|37|38|2
+12|Loan Account|19|20|2
+13|Customer Balance, Last in Account|50|51|3
+14|Client Totals Header|1|1|0
+15|Client Totals Trailer|1|1|0
+16|Date Record|1|1|0
+17|Trailer record|1|1|0
+18|<Unrecognized>|0|0|0
