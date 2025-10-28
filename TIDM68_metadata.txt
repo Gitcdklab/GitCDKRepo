@@ -1,0 +1,6 @@
+ROW_TYPE_NO|ROW_TYPE|FIELDS_IN|FIELDS_OUT|TRANSFORMS
+1|Header record|8|8|0
+2|Memo H record|22|23|2
+3|Memo T record|22|23|2
+4|Memo M record|16|17|2
+5|Trailer record|7|7|0
