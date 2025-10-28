@@ -1,0 +1,943 @@
+# AWS Glue Studio Notebook
+##### You are now running a AWS Glue Studio notebook; To start using your notebook you need to start an AWS Glue Interactive Session.
+
+
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql import SQLContext
+from pyspark.sql.functions import monotonically_increasing_id, lit, concat_ws, split, explode, coalesce 
+from pyspark.sql.types import IntegerType
+
+#args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+sc = SparkContext.getOrCreate()
+glueContext = GlueContext(sc)
+sparkSession = glueContext.spark_session
+sqlContext = SQLContext(sparkSession.sparkContext, sparkSession)
+
+job = Job(glueContext)
+#job.init(args['JOB_NAME'], args)
+
+#---------------------------------------------------------------------------------------------------------------------
+# Files and folders
+#---------------------------------------------------------------------------------------------------------------------
+
+# source file code, file name and Athena table name
+fileCode               = 'V068'
+sourceFileName         = fileCode + '.SAMPLEFILE'
+sourceTableName        = 'v068_sourcefile'
+
+# S3 bucket and root transformation folder
+bucketURI              = 's3://wdda1-ue1-dev-rise-inbound1'
+transformPath          = bucketURI + '/transformation/'
+
+# shared folders
+lookupPath             = transformPath + 'lookup/'
+metadataPath           = transformPath + 'metadata/'
+outputPath             = transformPath + 'output/'
+
+# file specific folders
+sourcePath             = transformPath + fileCode + '/source/'
+targetPath             = transformPath + fileCode + '/target/'
+rejectedPath           = transformPath + fileCode + '/rejected/'
+exceptionsPath         = transformPath + fileCode + '/exceptions/'
+auditPath              = transformPath + fileCode + '/audit/'
+errorPath              = transformPath + fileCode + '/error/'
+
+# file names
+fileMetaFileName       = fileCode + '-metadata.txt'
+exceptionsMetaFileName = 'exceptions-metadata.txt'
+auditMetaFileName      = 'audit-metadata.txt'
+
+targetFileName         = sourceFileName + ".OUTPUT.txt"
+rejectedFileName       = sourceFileName + ".REJECTED.txt"
+exceptionsFileName     = sourceFileName + ".EXCEPTIONS.txt"
+auditFileName          = sourceFileName + ".AUDIT.txt"
+mapStructErrFileName   = sourceFileName + ".MAP_STRUCT_ERRORS.txt"
+mapOutputErrFileName   = sourceFileName + ".MAP_OUTPUT_ERRORS.txt"
+logFileName            = sourceFileName + ".LOG.txt"
+#---------------------------------------------------------------------------------------------------------------------
+# RenameDataLakeFile
+#---------------------------------------------------------------------------------------------------------------------
+
+def RenameDataLakeFile(s3BucketURI, sourcePath, targetPath, newFileName):
+    
+    URI = sc._gateway.jvm.java.net.URI
+    Path = sc._gateway.jvm.org.apache.hadoop.fs.Path
+    FileSystem = sc._gateway.jvm.org.apache.hadoop.fs.FileSystem
+    
+    fs = FileSystem.get(URI(s3BucketURI), sc._jsc.hadoopConfiguration())
+
+    # rename created file
+    outputFilePath = fs.globStatus(Path(sourcePath + "part*"))[0].getPath()
+    fs.rename(outputFilePath, Path(targetPath + newFileName))
+
+#---------------------------------------------------------------------------------------------------------------------
+# Read the v068 sourcefile into a DynamicFrame from the v068_samplefile Athena table
+#---------------------------------------------------------------------------------------------------------------------
+
+#source_df = sqlContext.sql("SELECT monotonically_increasing_id() as _ROW_ID, value FROM rise_etl.v68_sourcefile")
+source_df = sqlContext.sql("SELECT monotonically_increasing_id() as _ROW_ID, value FROM text.`s3://wdda1-ue1-dev-rise-inbound1/transformation/V068/source/V68.SAMPLFILE.txt`")
+
+source_dyf = DynamicFrame.fromDF(source_df, glueContext)
+source_dyf.show(5)
+
+#---------------------------------------------------------------------------------------------------------------------
+# Read xRef-AccountType lookup table
+#---------------------------------------------------------------------------------------------------------------------
+xRefAccTypePath = lookupPath + 'x-ref-account-type.txt'
+
+xRefAccTypeDF = glueContext.create_dynamic_frame.from_options(
+    connection_type="s3",
+    connection_options={"paths": [xRefAccTypePath]},
+    format="csv",
+    format_options={
+        "withHeader": True,
+        "separator": "|"
+    }
+)
+
+xRefAccTypeList = map(lambda row: row.asDict(), xRefAccTypeDF.toDF().collect())
+xRefAccTypeLookup = {elem["_Key_AccType"]: elem["_Value_AccType"] for elem in xRefAccTypeList}
+xRefAccTypeDF.show()
+
+#---------------------------------------------------------------------------------------------------------------------
+# Define structure of each row in the DynamicFrame
+#---------------------------------------------------------------------------------------------------------------------
+import logging
+
+def log_errors(inner):
+    def wrapper(*args, **kwargs):
+        try:
+            return inner(*args, **kwargs)
+        except Exception as e:
+            logging.exception('Error in function: {}'.format(inner))
+            raise
+    return wrapper
+
+@log_errors
+def CreateSourceRowStructure(record):
+    
+    rowId      = record["_ROW_ID"]
+    rowData    = record["value"]
+
+    rowStatus  = 0
+    exceptions = []
+
+    # Check row length
+    rowLength = len(rowData)
+    
+    if rowLength != 144:
+        
+        # <Unknown> row type
+        rowType = "<Unrecognized>"
+            
+        # Row has incorrect length != 144
+        rowStatus = -1
+        exceptions.append(f"INVALID_LENGHT#ROW#Invalid row length [{rowLength}]")
+
+        record["_ROW_TYPE"]       = rowType
+        record["_ROW_STATUS"]     = rowStatus
+        record["_ROW_EXCEPTIONS"] = exceptions
+
+        return record
+
+    # Row has correct length = 144
+    
+    filler1             = rowData[5-1:24]
+    rowType             = rowData[25-1]
+
+    branchNumber        = rowData[4-1:6]
+    accountType         = rowData[16-1]
+    accountChekckDigit  = '~'
+
+    if rowType == "1":
+
+        if filler1 == " " * 20:
+
+            # Header record
+            rowType = "Header record"
+
+            filler0                             = rowData[1-1]
+            if filler0 == " " * 1:
+                record["FILLER 0"]              = filler0
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (0)#Filler containing data [{filler0}]")
+            
+            record["CLIENT"]                    = rowData[2-1:4]
+            record["FILLER 1"]                  = rowData[5-1:24]
+            record["RECORD TYPE"]               = rowData[25-1]
+            record["DATE="]                     = rowData[26-1:30]
+            record["FILE CREATION DATE & TIME"] = rowData[31-1:42]
+            record["ADP-SEC-POSITION"]          = rowData[43-1:58]
+
+            filler9                             = rowData[59-1:144]
+            if filler9 == " " * 86:
+                record["FILLER 9"]              = filler9
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[59:144] (9)#Filler containing data [{filler9}]")
+
+        else:
+
+            # Memo H record
+            rowType = "Memo H record"
+            accountChekckDigit                  = rowData[17-1]
+
+            filler0                             = rowData[1-1]
+            if filler0 == " " * 1:
+                record["FILLER 0"]              = filler0
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (0)#Filler containing data [{filler0}]")
+            
+            record["CLIENT"]                    = rowData[2-1:4]
+            record["BRANCH"]                    = rowData[5-1:7]
+            record["ACCOUNT"]                   = rowData[8-1:12]
+            record["CURRENCY"]                  = rowData[13-1:15]
+            
+            # Account Type lookup
+            accountType                         = rowData[16-1]
+            accountTypeXRef                     = xRefAccTypeLookup.get(accountType)
+            
+            if accountTypeXRef is not None:
+                record["TYPE"]                  = accountTypeXRef
+                record["NEW TYPE"]              = branchNumber + accountTypeXRef + accountChekckDigit
+            else:
+                record["TYPE"]                  = accountType
+                record["NEW TYPE"]              = ""
+                rowStatus = -3
+                exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+            record["CHKDIG"]                    = rowData[17-1]
+            record["ADP SECURITY CODE"]         = rowData[18-1:24]
+            record["RECORD TYPE 1"]             = rowData[25-1]
+            record["RR"]                        = rowData[26-1:28]
+            record["TD QUANTITY"]               = rowData[29-1:45]
+            record["TD QUANTITY SGN"]           = rowData[46-1:46]
+            record["SD QUANTITY"]               = rowData[47-1:63]
+            record["SD QUANTITY SGN"]           = rowData[64-1:64]
+            record["MEMO COUNT"]                = rowData[65-1:66]
+            record["MEMO SB QUANTITY"]          = rowData[67-1:83]
+            record["MEMO SB QUANTITY SGN"]      = rowData[84-1:84]
+            record["MEMO SD QUANTITY"]          = rowData[85-1:101]
+            record["MEMO SD QUANTITY SGN"]      = rowData[102-1:102]
+            record["MEMO TM QUANTITY"]          = rowData[103-1:119]
+            record["MEMO TM QUANTITY SGN"]      = rowData[120-1:120]
+
+            filler9                             = rowData[121-1:144]
+            if filler9 == " " * 24:
+                record["FILLER 9"]              = filler9
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[121:144] (9)#Filler containing data [{filler9}]")
+
+    elif rowType == "2":
+
+        # Memo T record
+        rowType = "Memo T record"
+        accountChekckDigit                  = rowData[17-1]
+
+        filler0                             = rowData[1-1]
+        if filler0 == " " * 1:
+            record["FILLER 0"]              = filler0
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (0)#Filler containing data [{filler0}]")
+
+        record["CLIENT"]                    = rowData[2-1:4]
+        record["BRANCH"]                    = rowData[5-1:7]
+        record["ACCOUNT"]                   = rowData[8-1:12]
+        record["CURRENCY"]                  = rowData[13-1:15]
+            
+        # Account Type lookup
+        accountType                         = rowData[16-1]
+        accountTypeXRef                     = xRefAccTypeLookup.get(accountType)
+        
+        if accountTypeXRef is not None:
+            record["TYPE"]                  = accountTypeXRef
+            record["NEW TYPE"]              = branchNumber + accountTypeXRef + accountChekckDigit
+        else:
+            record["TYPE"]                  = accountType
+            record["NEW TYPE"]              = ""
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+        record["CHKDIG"]                    = rowData[17-1]
+        record["ADP SECURITY CODE"]         = rowData[18-1:24]
+        record["RECORD TYPE Z"]             = rowData[25-1]
+        record["MEMO TF QUANTITY"]          = rowData[26-1:42]
+        record["MEMO TF QUANTITY SIGN"]     = rowData[43-1:43]
+        record["MEMO TR QUANTITY"]          = rowData[44-1:60]
+        record["MEMO TR QUANTITY SIGN"]     = rowData[61-1:61]
+        record["MEMO TL QUANTITY"]          = rowData[62-1:78]
+        record["MEMO TL QUANTITY SIGN"]     = rowData[79-1:79]
+        record["MEMO SK QUANTITY"]          = rowData[80-1:96]
+        record["MEMO SK QUANTITY SIGN"]     = rowData[97-1:97]
+        record["MEMO SN QUANTITY"]          = rowData[98-1:114]
+        record["MEMO SN QUANTITY SIGN"]     = rowData[115-1:115]
+        record["MEMO OD QUANTITY"]          = rowData[116-1:132]
+        record["MEMO OD QUANTITY SIGN"]     = rowData[133-1:133]
+
+        filler9                             = rowData[134-1:144]
+        if filler9 == " " * 11:
+            record["FILLER 9"]              = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[134:144] (9)#Filler containing data [{filler9}]")
+
+    elif rowType == "3":
+
+        # Memo M record
+        rowType = "Memo M record"
+        accountChekckDigit                  = rowData[17-1]
+        
+        filler0                             = rowData[1-1]
+        if filler0 == " " * 1:
+            record["FILLER 0"]              = filler0
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (0)#Filler containing data [{filler0}]")
+
+        record["CLIENT 068"]                = rowData[2-1:4]
+        record["BRANCH"]                    = rowData[5-1:7]
+        record["ACCOUNT"]                   = rowData[8-1:12]
+        record["CURRENCY"]                  = rowData[13-1:15]
+
+        # Account Type lookup
+        accountType                         = rowData[16-1]
+        accountTypeXRef                     = xRefAccTypeLookup.get(accountType)
+        
+        if accountTypeXRef is not None:
+            record["TYPE"]                  = accountTypeXRef
+            record["NEW TYPE"]              = branchNumber + accountTypeXRef + accountChekckDigit
+        else:
+            record["TYPE"]                  = accountType
+            record["NEW TYPE"]              = ""
+            rowStatus = -3
+            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
+
+        record["CHKDIG"]                    = rowData[17-1]
+        record["ADP SECURITY CODE"]         = rowData[18-1:24]
+        record["RECORD TYPE 3"]             = rowData[25-1]
+        record["MEMO OR QUANTITY"]          = rowData[26-1:43]
+        record["MEMO OR QUANTITY SIGN"]     = rowData[44-1:44]
+        record["MEMO TB QUANTITY"]          = rowData[45-1:56]
+        record["MEMO TB QUANTITY SIGN"]     = rowData[57-1:57]
+        record["MEMO TC QUANTITY"]          = rowData[58-1:69]
+        record["MEMO TC QUANTITY SIGN"]     = rowData[70-1:70]
+
+        filler9                             = rowData[71-1:144]
+        if filler9 == " " * 74:
+            record["FILLER 9"]              = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[71:144] (9)#Filler containing data [{filler9}]")
+
+    elif rowType == "Z":
+    
+        if filler1 == "9" * 20:
+
+            # Trailer record
+            rowType = "Trailer record"
+
+            filler0                             = rowData[1-1]
+            if filler0 == " " * 1:
+                record["FILLER 0"]              = filler0
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (0)#Filler containing data [{filler0}]")
+
+            record["CLIENT 068"]                = rowData[2-1:4]
+            record["FILLER 1"]                  = rowData[5-1:24]
+            record["RECORD TYPE"]               = rowData[25-1]
+            record["REC CTR"]                   = rowData[26-1:33]
+            record["RECORD COUNT"]              = rowData[34-1:41]
+
+            filler9                             = rowData[42-1:144]
+            if filler9 == " " * 103:
+                record["FILLER 9"]              = filler9
+            else:
+                rowStatus = -4
+                exceptions.append(f"INVALID_FILLER#FILLER@[42:144] (9)#Filler containing data [{filler9}]")
+
+        else:
+            # <Unknown>
+            rowType = "<Unrecognized>"
+            
+            # Bad structure of the record
+            rowStatus = -2
+            exceptions.append(f"INVALID_STRUCTURE#ROW TYPE[@[25]={rowType},FILLER@[5:24]={filler1}]#Invalid row type")
+            
+    else:
+        # <Unknown>
+        rowType = "<Unrecognized>"
+            
+        # Bad structure of the record
+        rowStatus = -2
+        exceptions.append(f"INVALID_STRUCTURE#ROW TYPE[@[25]={rowType}]#Invalid row type")
+
+    record["_ROW_TYPE"]                         = rowType
+    record["_ROW_STATUS"]                       = rowStatus
+    record["_ROW_EXCEPTIONS"]                   = exceptions        
+    
+    return record
+
+#---------------------------------------------------------------------------------------------------------------------
+# Apply the structure transformation to the DynamicFrame
+#---------------------------------------------------------------------------------------------------------------------
+
+mapped_source_dyf = Map.apply(frame = source_dyf, f = CreateSourceRowStructure)
+
+mappingErrCount = mapped_source_dyf.stageErrorsCount()
+if mappingErrCount > 0:
+    mapped_source_err_df = mapped_source_dyf.errorsAsDynamicFrame().repartition(1).toDF()
+    mapped_source_err_df.write.mode("append").json(errorPath)
+    
+    RenameDataLakeFile(bucketURI,errorPath, errorPath, "V068.RowStructureErrors.txt")
+    #raise Exception(f"Errors [{mappingErrCount}] during record structure mapping.")
+
+#print(mappingErrCount)
+errors_source_dyf = mapped_source_dyf.errorsAsDynamicFrame()
+errors_source_dyf.show()
+#---------------------------------------------------------------------------------------------------------------------
+# Split DynamicFrame to the default and the rejected outputs
+#---------------------------------------------------------------------------------------------------------------------
+from awsglue.dynamicframe import DynamicFrameCollection
+import concurrent.futures
+import re
+
+class GroupFilter:
+      def __init__(self, name, filters):
+        self.name = name
+        self.filters = filters
+
+def apply_group_filter(source_DyF, group):
+    return(Filter.apply(frame = source_DyF, f = group.filters))
+
+def threadedRoute(glue_ctx, source_DyF, group_filters) -> DynamicFrameCollection:
+    dynamic_frames = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor: 
+        future_to_filter = {executor.submit(apply_group_filter, source_DyF, gf): gf for gf in group_filters}
+        for future in concurrent.futures.as_completed(future_to_filter):
+            gf = future_to_filter[future]
+            if future.exception() is not None:
+                print('%r generated an exception: %s' % (gf, future.exception()))
+            else:
+                dynamic_frames[gf.name] = future.result()
+    return DynamicFrameCollection(dynamic_frames, glue_ctx)
+
+# Conditional Router
+conditionalRouter = threadedRoute(glueContext,
+  source_DyF = mapped_source_dyf,
+  group_filters = [GroupFilter(name = "output_transformed", filters = lambda row: (bool(int(row["_ROW_STATUS"]) == 0))), GroupFilter(name = "output_rejected", filters = lambda row: (not(bool(int(row["_ROW_STATUS"]) == 0))))])
+
+# Rows successfuly transformed -> transformed_dyf
+transformed_dyf   = SelectFromCollection.apply(dfc=conditionalRouter, key="output_transformed", transformation_ctx="output_transformed")
+
+# Rows rejected -> rejected_dyf
+rejected_dyf = SelectFromCollection.apply(dfc=conditionalRouter, key="output_rejected", transformation_ctx="output_rejected")
+transformed_dyf.show()
+rejected_dyf.show()
+#---------------------------------------------------------------------------------------------------------------------
+# Form each output row structure
+#---------------------------------------------------------------------------------------------------------------------
+@log_errors
+def CreateOutputRowStructure(record):
+    
+    rowData   = record["value"]
+    rowType   = record["_ROW_TYPE"]
+
+    if rowType == "Header record":
+
+        # Header record
+
+        record["_ROW_DATA"] = "|".join([
+
+            record["FILLER 0"],
+            record["CLIENT"],
+            record["FILLER 1"],
+            record["RECORD TYPE"],
+            record["DATE="],
+            record["FILE CREATION DATE & TIME"],
+            record["ADP-SEC-POSITION"],
+            record["FILLER 9"]
+
+        ])
+
+    elif rowType == "Memo H record":
+    
+        # Memo H record
+        record["_ROW_DATA"] = "|".join([
+
+            record["FILLER 0"],
+            record["CLIENT"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["CURRENCY"],
+            record["TYPE"],
+            record["CHKDIG"],
+            record["NEW TYPE"],
+            record["NEW TYPE"],
+            record["ADP SECURITY CODE"],
+            record["RECORD TYPE 1"],
+            record["RR"],
+            record["TD QUANTITY"],
+            record["TD QUANTITY SGN"],
+            record["SD QUANTITY"],
+            record["SD QUANTITY SGN"],
+            record["MEMO COUNT"],
+            record["MEMO SB QUANTITY"],
+            record["MEMO SB QUANTITY SGN"],
+            record["MEMO SD QUANTITY"],
+            record["MEMO SD QUANTITY SGN"],
+            record["MEMO TM QUANTITY"],
+            record["MEMO TM QUANTITY SGN"],
+            record["FILLER 9"]
+
+        ])
+
+    elif rowType == "Memo T record":
+
+        # Memo T record
+        record["_ROW_DATA"] = "|".join([
+
+            record["FILLER 0"],
+            record["CLIENT"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["CURRENCY"],
+            record["TYPE"],
+            record["CHKDIG"],
+            record["NEW TYPE"],
+            record["NEW TYPE"],
+            record["ADP SECURITY CODE"],
+            record["RECORD TYPE Z"],
+            record["MEMO TF QUANTITY"],
+            record["MEMO TF QUANTITY SIGN"],
+            record["MEMO TR QUANTITY"],
+            record["MEMO TR QUANTITY SIGN"],
+            record["MEMO TL QUANTITY"],
+            record["MEMO TL QUANTITY SIGN"],
+            record["MEMO SK QUANTITY"],
+            record["MEMO SK QUANTITY SIGN"],
+            record["MEMO SN QUANTITY"],
+            record["MEMO SN QUANTITY SIGN"],
+            record["MEMO OD QUANTITY"],
+            record["MEMO OD QUANTITY SIGN"],
+            record["FILLER 9"]
+
+        ])
+
+    elif rowType == "Memo M record":
+
+        # Memo M record
+        record["_ROW_DATA"] = "|".join([
+
+            record["FILLER 0"],
+            record["CLIENT 068"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["CURRENCY"],
+            record["TYPE"],
+            record["CHKDIG"],
+            record["NEW TYPE"],
+            record["NEW TYPE"],
+            record["ADP SECURITY CODE"],
+            record["RECORD TYPE 3"],
+            record["MEMO OR QUANTITY"],
+            record["MEMO OR QUANTITY SIGN"],
+            record["MEMO TB QUANTITY"],
+            record["MEMO TB QUANTITY SIGN"],
+            record["MEMO TC QUANTITY"],
+            record["MEMO TC QUANTITY SIGN"],
+            record["FILLER 9"]
+        ])
+
+    elif rowType == "Trailer record":
+    
+        # Trailer record
+        record["_ROW_DATA"] = "|".join([
+
+            record["FILLER 0"],
+            record["CLIENT 068"],
+            record["RECORD TYPE"],
+            record["REC CTR"],
+            record["RECORD COUNT"],
+            record["FILLER 9"]
+
+        ])
+        
+    else:
+        # Bad structure of the record
+        record["_ROW_DATA"] = record["value"]
+
+    return record
+
+#---------------------------------------------------------------------------------------------------------------------
+# Apply the output row structure to the DynamicFrame
+#---------------------------------------------------------------------------------------------------------------------
+
+mapped_target_dyf = Map.apply(frame = transformed_dyf, f = CreateOutputRowStructure)
+
+outputMappingErrCount = mapped_target_dyf.stageErrorsCount()
+if outputMappingErrCount > 0:
+    mapped_target_err_df = mapped_target_dyf.errorsAsDynamicFrame().repartition(1).toDF()
+    mapped_target_err_df.write.mode("append").json(errorPath)
+    
+    RenameDataLakeFile(errorPath, errorPath, "V068.OutputRowMappingErrors.txt")
+    #raise Exception(f"Errors [{outputMappingErrCount}] during output record mapping.")
+
+#print(outputMappingErrCount)
+error_frame = mapped_target_dyf.errorsAsDynamicFrame()
+error_frame.show()
+
+#---------------------------------------------------------------------------------------------------------------------
+# Output the target file
+#---------------------------------------------------------------------------------------------------------------------
+
+# Merge the partitions of the DataFrame
+merged_target_df = mapped_target_dyf.select_fields(["_ROW_ID", "_ROW_TYPE", "_ROW_DATA"]).repartition(1).toDF()
+
+output_target_df = merged_target_df.select(["_ROW_TYPE", "_ROW_DATA"]).orderBy(merged_target_df["_ROW_ID"].cast(IntegerType()))
+output_target_df.show()
+
+output_target_df.select("_ROW_DATA").write.mode("append").option("lineSep","\r\n").text(targetPath)
+
+RenameDataLakeFile(bucketURI, targetPath, outputPath, targetFileName)
+output_target_df.show()
+
+#---------------------------------------------------------------------------------------------------------------------
+# Process and output the rejected file
+#---------------------------------------------------------------------------------------------------------------------
+
+# Merge the partitions of the DataFrame
+merged_rejected_df = rejected_dyf.select_fields(["_ROW_ID", "_ROW_TYPE", "_ROW_STATUS", "_ROW_EXCEPTIONS", "value"]).repartition(1).toDF()
+
+# Transform the exceptions column
+rejected_df = merged_rejected_df.select([
+                "_ROW_ID", 
+                "_ROW_TYPE",
+                "_ROW_STATUS", 
+                (concat_ws(";", merged_rejected_df["_ROW_EXCEPTIONS"])).alias("_ROW_EXCEPTIONS"), 
+                merged_rejected_df["value"].alias("_ROW_DATA")
+              ]).orderBy(merged_rejected_df["_ROW_ID"].cast(IntegerType()))
+
+#rejected_df.show()
+
+# Output the rejected file
+output_rejected_df = rejected_df.select(["_ROW_ID", "_ROW_TYPE", "_ROW_STATUS", "_ROW_DATA"]).orderBy("_ROW_TYPE")
+output_rejected_df.write.option("header","true").option("lineSep","\r\n").option("sep","|").mode("append").csv(rejectedPath)
+
+RenameDataLakeFile(bucketURI, rejectedPath, outputPath, rejectedFileName)
+output_rejected_df.show()
+
+#---------------------------------------------------------------------------------------------------------------------
+# Process and output the exceptions file
+#---------------------------------------------------------------------------------------------------------------------
+
+# Extract exceptions
+exceptions_raw_df   = merged_rejected_df.select(["_ROW_ID", "_ROW_TYPE", explode("_ROW_EXCEPTIONS").alias("_ROW_EXCEPTION")])
+exceptions_split_df = exceptions_raw_df.withColumn("_ROW_EXCEPTION_DATA", split(exceptions_raw_df["_ROW_EXCEPTION"], "#"))
+
+# Extract exceptions details
+exceptions_df = exceptions_split_df.select(
+        "_ROW_ID", 
+        "_ROW_TYPE",
+        (exceptions_split_df["_ROW_EXCEPTION_DATA"][0]).alias("_EXCEPTION_TYPE"),
+        (exceptions_split_df["_ROW_EXCEPTION_DATA"][1]).alias("_EXCEPTION_SOURCE"),
+        (exceptions_split_df["_ROW_EXCEPTION_DATA"][2]).alias("_EXCEPTION_DESC")
+    ).repartition(1).orderBy(exceptions_split_df["_ROW_ID"].cast(IntegerType()))
+
+#exceptions_df.show()
+
+# Merge the partitions of the DataFrame and output the exceptions file
+exceptions_df.write.option("header","true").option("lineSep","\r\n").option("sep","|").mode("append").csv(exceptionsPath)
+
+RenameDataLakeFile(bucketURI, exceptionsPath, outputPath, exceptionsFileName)
+exceptions_df.show()
+
+#---------------------------------------------------------------------------------------------------------------------
+# Collect Audit data for source rows
+#---------------------------------------------------------------------------------------------------------------------
+
+# Source rows results per file
+source_rows_df = source_df.groupBy().count()
+
+source_audit_df = source_rows_df.select([
+        (lit("ROWS_IN")).alias("_REPORT_SECTION"), 
+        (lit("FILE")).alias("_REPORT_LEVEL"), 
+        (lit("<file>")).alias("_ROW_TYPE"), 
+        (lit(None)).alias("_REPORT_LINE_LABEL"), 
+        (source_rows_df["count"]).alias("_REPORT_RESULT_VALUE")
+    ])
+
+source_audit_df.show()
+#---------------------------------------------------------------------------------------------------------------------
+# Collect Audit data for transformed rows
+#---------------------------------------------------------------------------------------------------------------------
+
+# Merge the partitions of the DataFrame
+transformed_df = transformed_dyf.toDF()
+
+# Reading file specific metadata file
+file_metadata_df = sparkSession.read.option("header", True).option("sep", '|').csv(metadataPath + fileMetaFileName)
+
+# Transformed rows results per row type
+transformed_type_rows_df = transformed_df.select("_ROW_TYPE").groupBy("_ROW_TYPE").count()
+
+# Joining with file specific metadata
+# changed ROW_TYPE to Record type to perform join
+transformed_meta_type_df = file_metadata_df.join(transformed_type_rows_df, file_metadata_df["Record type"] == transformed_type_rows_df["_ROW_TYPE"], "inner")
+
+transformed_meta_type_df.show()
+file_metadata_df.show()
+#transformed_df.show()
+transformed_type_rows_df.show()
+
+transformed_audit_type_df = \
+    transformed_meta_type_df.select([
+        (lit("ROWS_TRANSFORMED")).alias("_REPORT_SECTION"), 
+        (lit("ROW_TYPE")).alias("_REPORT_LEVEL"), 
+        (transformed_meta_type_df["Record type"]).alias("_ROW_TYPE"), 
+        (lit(None)).alias("_REPORT_LINE_LABEL"), 
+        (transformed_meta_type_df["count"]).alias("_REPORT_RESULT_VALUE")
+    ])
+
+transformed_audit_type_df.show()
+# Transformed rows results per file
+transformed_rows_df = transformed_type_rows_df.groupBy().sum("count").withColumnRenamed("sum(count)","count")
+
+transformed_audit_df = transformed_rows_df.select([
+        (lit("ROWS_TRANSFORMED")).alias("_REPORT_SECTION"), 
+        (lit("FILE")).alias("_REPORT_LEVEL"),
+        (lit("<file>")).alias("_ROW_TYPE"), 
+        (lit(None)).alias("_REPORT_LINE_LABEL"), 
+        (transformed_rows_df["count"]).alias("_REPORT_RESULT_VALUE")
+    ])
+
+transformed_audit_df.show()
+#---------------------------------------------------------------------------------------------------------------------
+# Collect Audit data for output rows
+#---------------------------------------------------------------------------------------------------------------------
+
+# Output rows results per row type
+output_type_rows_df = output_target_df.select("_ROW_TYPE").groupBy("_ROW_TYPE").count()
+
+# Joining with file specific metadata
+output_meta_type_df = file_metadata_df.join(output_type_rows_df, file_metadata_df["Record type"] == output_type_rows_df["_ROW_TYPE"], "inner")
+
+output_meta_type_df.show()
+output_audit_type_df = \
+    output_meta_type_df.select([
+        (lit("ROW_TYPE")).alias("_REPORT_LEVEL"), 
+        (output_meta_type_df["Record type"]).alias("_ROW_TYPE"), 
+        (lit(None)).alias("_REPORT_LINE_LABEL"), 
+        (output_meta_type_df["count"]).alias("ROWS_OUT"),
+        (output_meta_type_df["count"] * output_meta_type_df["Fields in"]).alias("FIELDS_IN"), 
+        (output_meta_type_df["count"] * output_meta_type_df["Fields out"]).alias("FIELDS_OUT"), 
+        (output_meta_type_df["count"] * output_meta_type_df["Transforms"]).alias("TRANSFORMS")
+    ]) \
+    .unpivot(
+        ["_REPORT_LEVEL", "_ROW_TYPE", "_REPORT_LINE_LABEL"], 
+        ["ROWS_OUT", "FIELDS_IN", "FIELDS_OUT", "TRANSFORMS"], 
+        "_REPORT_SECTION", 
+        "_REPORT_RESULT_VALUE"
+    ) \
+    .select(["_REPORT_SECTION", "_REPORT_LEVEL", "_ROW_TYPE", "_REPORT_LINE_LABEL", "_REPORT_RESULT_VALUE"])
+
+output_audit_type_df.show()
+
+# Output rows results per file
+output_type_df = output_type_rows_df.groupBy().sum("count").withColumnRenamed("sum(count)","count")
+
+output_audit_df = output_type_df.select([
+        (lit("ROWS_OUT")).alias("_REPORT_SECTION"), 
+        (lit("FILE")).alias("_REPORT_LEVEL"), 
+        (lit("<file>")).alias("_ROW_TYPE"), 
+        (lit(None)).alias("_REPORT_LINE_LABEL"), 
+        (output_type_df["count"]).alias("_REPORT_RESULT_VALUE")
+    ])
+
+output_audit_df.show()
+#---------------------------------------------------------------------------------------------------------------------
+# Collect Audit data for rejected rows
+#---------------------------------------------------------------------------------------------------------------------
+
+# Rejected rows results per row type
+rejected_rows_type_df = rejected_df.select("_ROW_TYPE").groupBy("_ROW_TYPE").count()
+#rejected_rows_type_df.show()
+
+rejected_audit_type_df = rejected_rows_type_df.select([
+        (lit("ROWS_REJECTED")).alias("_REPORT_SECTION"), 
+        (lit("ROW_TYPE")).alias("_REPORT_LEVEL"), 
+        (rejected_rows_type_df["_ROW_TYPE"]).alias("_ROW_TYPE"), 
+        (lit(None)).alias("_REPORT_LINE_LABEL"), 
+        (rejected_rows_type_df["count"]).alias("_REPORT_RESULT_VALUE")
+    ])
+
+rejected_audit_type_df.show()
+
+# Rejected rows results per file
+rejected_rows_df = rejected_rows_type_df.groupBy().sum("count").withColumnRenamed("sum(count)","count")
+
+rejected_audit_df = rejected_rows_df.select([
+        (lit("ROWS_REJECTED")).alias("_REPORT_SECTION"), 
+        (lit("FILE")).alias("_REPORT_LEVEL"), 
+        (lit("<file>")).alias("_ROW_TYPE"), 
+        (lit(None)).alias("_REPORT_LINE_LABEL"), 
+        (rejected_rows_df["count"]).alias("_REPORT_RESULT_VALUE")
+    ])
+
+rejected_audit_df.show()
+#---------------------------------------------------------------------------------------------------------------------
+# Collect Audit data for exceptions
+#---------------------------------------------------------------------------------------------------------------------
+
+# Reading exceptions metadata file
+ex_metadataFilePath = metadataPath + exceptionsMetaFileName
+ex_metadata_df = sparkSession.read.option("header", True).option("sep", '|').csv(ex_metadataFilePath)
+
+# Joining with exceptions metadata
+exceptions_full_df = ex_metadata_df.join(exceptions_df, ex_metadata_df["EXCEPTION_TYPE"] == exceptions_df["_EXCEPTION_TYPE"], "inner")
+
+# Exeption rows results per row type and exception category
+exception_rows_type_df = exceptions_full_df.select(["_ROW_TYPE", "EXCEPTION_CATEGORY"]).groupBy(["_ROW_TYPE", "EXCEPTION_CATEGORY"]).count()
+
+exception_rows_type_df.show()
+
+exception_audit_type_df = exception_rows_type_df.select([
+        (exception_rows_type_df["EXCEPTION_CATEGORY"]).alias("_REPORT_SECTION"), 
+        (lit("ROW_TYPE")).alias("_REPORT_LEVEL"), 
+        (exception_rows_type_df["_ROW_TYPE"]).alias("_ROW_TYPE"), 
+        (lit(None)).alias("_REPORT_LINE_LABEL"),
+        (exception_rows_type_df["count"]).alias("_REPORT_RESULT_VALUE")
+    ])
+
+exception_audit_type_df.show()
+#---------------------------------------------------------------------------------------------------------------------
+# Collect all Audit data
+#---------------------------------------------------------------------------------------------------------------------
+
+# Audit information
+all_audit_df = source_audit_df \
+    .union(output_audit_df) \
+    .union(rejected_audit_df) \
+    .union(transformed_audit_df) \
+    .union(transformed_audit_type_df) \
+    .union(output_audit_type_df) \
+    .union(rejected_audit_type_df) \
+    .union(exception_audit_type_df)
+
+all_audit_df.show()
+
+#all_audit_df.select(["_REPORT_SECTION", "_REPORT_LEVEL", "_ROW_TYPE", "_REPORT_RESULT_VALUE"]).write.option("header","true").option("lineSep","\r\n").option("sep","\t").option("quote", "").mode("append").csv(auditPath)
+
+#RenameDataLakeFile(bucketURI, auditPath, outputPath, "ALL." + auditFileName)
+
+# Reading audit metadata file
+audit_metadata_df = sparkSession.read.option("header", True).option("sep", '|').csv(metadataPath + auditMetaFileName)
+audit_metadata_df.show()
+
+file_audit_metadata_df = file_metadata_df.withColumn("_ROW_LEVEL", lit("ROW_TYPE"))
+file_audit_metadata_df.show()
+
+audit_metadata_join_df = audit_metadata_df.join(
+        file_audit_metadata_df, 
+        audit_metadata_df["REPORT_LEVEL"] == file_audit_metadata_df["_ROW_LEVEL"],
+        "left"
+    )
+
+audit_metadata_join_df.show()
+
+audit_metadata_type_df = audit_metadata_join_df.select([
+        "REPORT_LINE_NO",
+        "REPORT_SECTION_NO",
+        "REPORT_SECTION",
+        "REPORT_LEVEL",
+        (coalesce(audit_metadata_join_df["Record type"], lit("<file>"))).alias("ROW_TYPE"),
+        "REPORT_LINE_LABEL", 
+        "REPORT_RESULT_LABEL",
+        (coalesce(audit_metadata_join_df["REPORT_SECTION_NO"], lit(0))).alias("ROW_TYPE_NO")
+    ])
+
+audit_metadata_type_df.show()
+audit_merged_df = audit_metadata_type_df.join(all_audit_df, 
+                                              (audit_metadata_type_df["REPORT_SECTION"] == all_audit_df["_REPORT_SECTION"]) & 
+                                              (audit_metadata_type_df["REPORT_LEVEL"]   == all_audit_df["_REPORT_LEVEL"]) & 
+                                              (audit_metadata_type_df["ROW_TYPE"]       == all_audit_df["_ROW_TYPE"]), 
+                                              "left")
+
+audit_df = audit_merged_df.select([
+        (coalesce(audit_merged_df["REPORT_LINE_NO"], lit(0))).alias("REPORT_LINE_NO"),
+        "REPORT_SECTION_NO",
+        "REPORT_SECTION",
+        "REPORT_LEVEL",
+        (lit(sourceFileName)).alias("FILE_NAME"),
+        "ROW_TYPE_NO",
+        "ROW_TYPE",
+        "REPORT_LINE_LABEL",
+        "REPORT_RESULT_LABEL",
+        (audit_merged_df["_REPORT_RESULT_VALUE"]).alias("REPORT_RESULT_VALUE"),
+    ]).repartition(1)
+
+audit_df.show()
+
+audit_report_df = audit_df \
+    .orderBy([audit_merged_df["ROW_TYPE_NO"].cast(IntegerType()), audit_merged_df["REPORT_SECTION_NO"].cast(IntegerType()), audit_merged_df["REPORT_LINE_NO"].cast(IntegerType())]) \
+    .select([(monotonically_increasing_id()).alias("REPORT_LINE_NO"), "FILE_NAME", "ROW_TYPE", "REPORT_LINE_LABEL", "REPORT_RESULT_LABEL", "REPORT_RESULT_VALUE"])
+
+#audit_report_df.show()
+#---------------------------------------------------------------------------------------------------------------------
+# Output the audit file
+#---------------------------------------------------------------------------------------------------------------------
+
+# Merge the partitions of the DataFrame
+#audit_report_df.write.option("header","true").option("lineSep","\r\n").option("sep","|").option("quote", "").mode("append").csv(auditPath)
+audit_report_df.write.option("header","true").option("lineSep","\r\n").option("sep","\t").option("quote", "").mode("append").csv(auditPath)
+
+RenameDataLakeFile(bucketURI, auditPath, outputPath, auditFileName)
+
+#---------------------------------------------------------------------------------------------------------------------
+# Output the tabular audit file
+#---------------------------------------------------------------------------------------------------------------------
+
+audit_report_pivot_df = audit_df.groupBy(["FILE_NAME", "ROW_TYPE_NO", "ROW_TYPE"]).pivot("REPORT_RESULT_LABEL").sum("REPORT_RESULT_VALUE") \
+    .repartition(1).orderBy([audit_df["ROW_TYPE_NO"].cast(IntegerType())])
+
+audit_report_pivot_df.show()
+
+audit_report_tab_df = audit_report_pivot_df \
+    .select([
+        (audit_report_pivot_df["ROW_TYPE_NO"].cast(IntegerType()) + 1).alias("REPORT_LINE_NO"), 
+        "FILE_NAME",
+        "ROW_TYPE",
+        "Rows In",
+        "Rows Out",
+        "Rows Rejected",
+        "Rows Transformed",
+        "Rows Not Transformed",
+        "Rows Not Output",
+        "Fields In",
+        "Fields Out",
+        "Transformations",
+        "Invalid structure",
+        "Invalid transformation",
+        "Invalid data",
+        "Missing data"
+    ])
+
+audit_report_tab_df.write.option("header","true").option("lineSep","\r\n").option("sep","\t").option("quote", "").mode("append").csv(auditPath)
+
+RenameDataLakeFile(bucketURI, auditPath, outputPath, "TAB." + auditFileName)
+audit_report_tab_df.show()
+#---------------------------------------------------------------------------------------------------------------------
+# End of Job
+#---------------------------------------------------------------------------------------------------------------------
+job.commit()
