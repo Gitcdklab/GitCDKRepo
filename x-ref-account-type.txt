@@ -1,0 +1,11 @@
+_Key_AccType|_Value_AccType
+1|C
+2|M
+3|D
+4|Q
+5|S
+6|U
+7|B
+8|Y
+9|X
+0|Z
