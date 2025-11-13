@@ -1,0 +1,52 @@
+function main(workbook: ExcelScript.Workbook) {
+    type SplitRange = [number, number];
+
+    const splits: Record<string, SplitRange[]> = {
+        header: [[0, 1], [1, 4], [4, 24], [24, 25], [25, 30], [30, 42], [42, 58], [58, 144]],
+        '1': [[0, 1], [1, 4], [4, 7], [7, 12], [12, 15], [15, 16], [16, 17], [17, 24], [24, 25], [25, 28], [28, 45], [45, 46], [46, 63], [63, 64], [64, 66], [66, 83], [83, 84], [84, 101], [101, 102], [102, 119], [119, 120], [120, 144]],
+        '2': [[0, 1], [1, 4], [4, 7], [7, 12], [12, 15], [15, 16], [16, 17], [17, 24], [24, 25], [25, 42], [42, 43], [43, 60], [60, 61], [61, 78], [78, 79], [79, 96], [96, 97], [97, 114], [114, 115], [115, 132], [132, 133], [133, 144]],
+        '3': [[0, 1], [1, 4], [4, 7], [7, 12], [12, 15], [15, 16], [16, 17], [17, 24], [24, 25], [25, 43], [43, 44], [44, 56], [56, 57], [57, 69], [69, 70], [70, 144]],
+        Z: [[0, 1], [1, 4], [4, 24], [24, 25], [25, 26], [33, 34], [40, 144]]
+    };
+
+    const sheets: Record<string, string[][]> = {
+        HeaderSheet: [],
+        'Record Type Sheet1': [],
+        'Record Type Sheet2': [],
+        'Record Type Sheet3': [],
+        FooterSheet: []
+    };
+
+    function splitLine(line: string, ranges: SplitRange[]): string[] {
+        return ranges.map(([start, end]) => line.slice(start, end).trim());
+    }
+
+    const rawSheet: ExcelScript.Worksheet = workbook.getWorksheet("RawData");
+    const rawData: string[][] = rawSheet.getUsedRange().getValues() as string[][];
+
+    for (let i = 0; i < rawData.length; i++) {
+        const line: string = rawData[i][0];
+        if (line.includes("DATE=")) {
+            sheets.HeaderSheet.push(splitLine(line, splits.header));
+        } else if (line.length >= 25) {
+            const type: string = line[24];
+            if (type === "1") sheets["Record Type Sheet1"].push(splitLine(line, splits["1"]));
+            else if (type === "2") sheets["Record Type Sheet2"].push(splitLine(line, splits["2"]));
+            else if (type === "3") sheets["Record Type Sheet3"].push(splitLine(line, splits["3"]));
+            else if (type === "Z") sheets.FooterSheet.push(splitLine(line, splits.Z));
+        }
+    }
+
+    for (const [sheetName, data] of Object.entries(sheets)) {
+        let sheet: ExcelScript.Worksheet;
+        if(!sheet){
+            sheet = workbook.addWorksheet(sheetName);
+        }
+
+        if (data.length > 0 && data[0].length > 0) {
+            sheet.getRangeByIndexes(0, 0, data.length, data[0].length).setValues(data);
+        } else {
+            sheet.getRange("A1").setValue("No data found");
+        }
+    }
+}
