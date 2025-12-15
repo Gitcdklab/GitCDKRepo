@@ -1,0 +1,432 @@
+#---------------------------------------------------------------------------------------------------------------------
+# Define structure of each row in the DynamicFrame
+#---------------------------------------------------------------------------------------------------------------------
+import logging
+
+def log_errors(inner):
+    def wrapper(*args, **kwargs):
+        try:
+            return inner(*args, **kwargs)
+        except Exception as e:
+            logging.exception('Error in function: {}'.format(inner))
+            raise
+    return wrapper
+
+
+@log_errors
+def CreateSourceRowStructure(record):
+    
+    
+    rowId      = record["_ROW_ID"]
+    rowData    = record["value"]
+    
+    rowStatus  = 0
+    exceptions = []
+
+    # Check row length
+    rowLength = len(rowData)
+    
+    if rowLength != 199: 
+        
+        # Row has incorrect length != 199
+        rowStatus = -1
+        exceptions.append(f"INVALID_LENGHT#ROW#Invalid row length [{rowLength}]")
+        
+        record["_ROW_STATUS"]     = rowStatus
+        record["_ROW_EXCEPTIONS"] = exceptions
+
+        return record
+
+
+    # Row has correct length = 199
+    dateEq    = rowData[1-1:5]
+    recCntEq  = rowData[1-1:8]    
+    rowType   = rowData[2-1:3]
+    
+    
+    if dataEq == "DATE=":
+        rowType = "HEADER"
+        record["LITERAL (DATE=)"]   = rowData[1-1:5]
+        record["PROCESS DATE"]      = rowData[6-1:11]
+        record["SYSTEM DATE"]       = rowData[12-1:17]
+        record["SYSTEM TIME"]       = rowData[18-1:23]
+        record["FILLER 1"]          = rowData[24-1:26]
+        record["DSN"]               = rowData[27-1:43]
+        record["PGM"]               = rowData[44-1:51]
+        record["CLIENT NUMBER"]     = rowData[52-1:54]
+        record["FILLER 9"]          = rowData[55-1:199]
+            
+                
+    elif recCntEq == "REC-CNT=":
+        rowType = "TRAILER"
+        record["LITERAL"]           = rowData[1-1:8]
+        record["RECORD COUNT"]      = rowData[9-1:19]
+        record["PROCESS DATE"]      = rowData[20-1:25]
+        record["SYS DATE"]          = rowData[26-1:31]
+        record["SYS TIME"]          = rowData[32-1:37]
+        record["PROGRAM"]           = rowData[38-1:45]
+        record["CLT NUMBER"]        = rowData[46-1:48]
+        record["FILLER 9"]          = rowData[49-1:199]
+            
+              
+    elif rowType == "01":
+        rowType = "RECORD LINE 1"
+        #Common
+        record["ACTION"]            = rowData[1-1]
+        record["RECORD ID"]         = rowData[2-1:3]
+        record["CLIENT NUMBER"]     = rowData[4-1:6]
+        record["BRANCH NUMBER"]     = rowData[7-1:9]
+        record["ACCOUNT NUMBER"]    = rowData[10-1:14]
+        record["NUMBER OF BENE"]    = rowData[15-1:16]
+        record["ACCOUNT TYPE"]      = rowData[17-1]
+        #record["NEW FIELD"]         = rowData[]
+        record["ACCOUNT CHECK DIGIT"]= rowData[18-1]
+        
+        #Additional
+        record["TOTAL BENEFICIARY"] = rowData[19-1:22]
+        record["NUMBER OF ACTIVE BENEFICIARY"] = rowData[23-1:26]
+        record["FILLER 1"]          = rowData[27-1:28]
+        record["FIRST NAME"]        = rowData[29-1:48]
+        record["INITIAL"]           = rowData[49-1]
+        record["LAST NAME"]         = rowData[50-1:69]
+        record["STREET LINE 1"]     = rowData[70-1:99]
+        record["STREET LINE 2"]     = rowData[100-1:129]
+        record["APT/SUITE"]         = rowData[130-1:134]
+        record["CITY"]              = rowData[135-1:164]
+        record["PROVINCE/STATE"]    = rowData[165-1:166]
+        record["COUNTRY CODE"]      = rowData[167-1:169]
+        record["POSTAL CODE"]       = rowData[170-1:179]
+        record["SUBSCRIBER ADDRESS INDICATOR"] = rowData[180-1]
+        record["FILLER 9"]          = rowData[181-1:199]
+            
+             
+    elif rowType == "02":
+        rowType = "RECORD LINE 2"
+        #Common
+        record["ACTION"]            = rowData[1-1]
+        record["RECORD ID"]         = rowData[2-1:3]
+        record["CLIENT NUMBER"]     = rowData[4-1:6]
+        record["BRANCH NUMBER"]     = rowData[7-1:9]
+        record["ACCOUNT NUMBER"]    = rowData[10-1:14]
+        record["NUMBER OF BENE"]    = rowData[15-1:16]
+        record["ACCOUNT TYPE"]      = rowData[17-1]
+        #record["NEW FIELD"]         = rowData[]
+        record["ACCOUNT CHECK DIGIT"] = rowData[18-1]
+        
+        #Additional
+        record["FILLER 1"]          = rowData[19-1:28]
+        record["BIRTH DATE"]        = rowData[29-1:36]
+        record["LANGUAGE"]          = rowData[37-1]
+        record["SEX"]               = rowData[38-1]
+        record["RELATION"]          = rowData[39-1:40]
+        record["BENE GEO CODE"]     = rowData[41-1:43]
+        record["SIN"]               = rowData[44-1:52]
+        record["BENE START DATE"]   = rowData[53-1:60]
+        record["PLAN MATURITY DATE"] = rowData[61-1:68]
+        record["FIRST CONTACT DATE"] = rowData[69-1:76]
+        record["REQUESTED GRANT"]   = rowData[77-1]
+        record["BENE ADDED DATE"]   = rowData[78-1:85]
+        record["PAC"]               = rowData[86-1:93]
+        record["STATUS CODE"]       = rowData[94-1:95]
+        record["CUSTOMER PARENT"]   = rowData[96-1:125]
+        record["TELEPHONE NUMBER"]  = rowData[126-1:137]
+        record["POST SECONDARY EDUCATION -1: PROGRAM LENGTH"]   = rowData[138-1]
+        record["POST SECONDARY EDUCATION -1: PROGRAM TYPE"]     = rowData[139-1:140]
+        record["EDUCATIONAL INSTITUTION POSTAL CODE"]           = rowData[141-1:150]
+        record["EDUCATIONAL INSTITUTION COUNTRY CODE"]          = rowData[151-1]
+        record["POST SECONDARY EDUCATION -1: PROGRAM YEAR"]     = rowData[152-1]
+        record["ACADEMIC YEAR LENGTH"]                          = rowData[153-1:155]
+        record["STATUS DATE"]       = rowData[156-1:163]
+        record["ORIGINATION DATE"]  = rowData[164-1:171]
+        record["RESP CODE"]         = rowData[172-1]
+        record["SIBLING ONLY"]      = rowData[173-1]
+        record["FILLER 9"]          = rowData[174-1:199]
+            
+               
+    elif rowType == "03":
+        rowType = "RECORD LINE 3"
+        #Common
+        record["ACTION"]            = rowData[1-1]
+        record["RECORD ID"]         = rowData[2-1:3]
+        record["CLIENT NUMBER"]     = rowData[4-1:6]
+        record["BRANCH NUMBER"]     = rowData[7-1:9]
+        record["ACCOUNT NUMBER"]    = rowData[10-1:14]
+        record["NUMBER OF BENE"]    = rowData[15-1:16]
+        record["ACCOUNT TYPE"]      = rowData[17-1]
+        #record["NEW FIELD"]         = rowData[]
+        record["ACCOUNT CHECK DIGIT"] = rowData[18-1]
+
+        #Additional
+        record["FILLER 1"]          = rowData[19-1:28]
+        record["FILLER 2"]          = rowData[29-1:32]
+        record["EDUCATION START DATE"] = rowData[33-1:40]
+        record["FILLER 3"]                      = rowData[41-1:43]
+        record["TRANSFER IN INITIATION DATE"]   = rowData[45-1:52]
+        record["TRANSFER IN COMPLETION DATE"]   = rowData[53-1:60]
+        record["TRANSFER OUT INITIATION DATE"]  = rowData[61-1:68]
+        record["TRANSFER OUT COMPLETION DATE"]  = rowData[69-1:76]
+        record["NUMBER OF PREV BENEFICIARIES"]  = rowData[77-1:78]
+        record["OLD CONTRACT"]      = rowData[79-1:93]
+        record["OLD SPECIMEN NUMBER"]           = rowData[94-1:103]
+        record["YEAR 16/17 INDICATOR"]          = rowData[104-1]
+        record["PRIMARY CAREGIVER LAST NAME"]   = rowData[105-1:124]
+        record["PRIMARY CAREGIVER FIRST NAME"]  = rowData[125-1:144]
+        record["PRIMARY CAREGIVER SIN"]         = rowData[145-1:159]
+        record["PRIMARY CAREGIVER ID CODE"]     = rowData[160-1]
+        record["REQUEST EDUCATION CESG CODE"]   = rowData[161-1]
+        record["REQUEST LEARNING BOND CODE"]    = rowData[162-1]
+        record["PROVINCIAL BOND CODE"]          = rowData[163-1:164]
+        record["REQUEST PROVINCIAL BOND CODE"]  = rowData[165-1]
+        record["REQUEST QESI CODE"]             = rowData[166-1]
+        record["REQUEST QESI START YEAR"]       = rowData[167-1:170]
+        record["FILLER 9"]                      = rowData[171-1:199]
+            
+                
+    elif rowType == "04":
+        rowType = "RECORD LINE 4"
+        #Common        
+        record["ACTION"]            = rowData[1-1]
+        record["RECORD ID"]         = rowData[2-1:3]
+        record["CLIENT NUMBER"]     = rowData[4-1:6]
+        record["BRANCH NUMBER"]     = rowData[7-1:9]
+        record["ACCOUNT NUMBER"]    = rowData[10-1:14]
+        record["NUMBER OF BENE"]    = rowData[15-1:16]
+        record["ACCOUNT TYPE"]      = rowData[17-1]
+        #record["NEW FIELD"]         = rowData[]
+        record["ACCOUNT CHECK DIGIT"] = rowData[18-1]
+        
+        #Additional
+        record["GRANT TYPE"]        = rowData[19-1:21]
+        record["BATCH CODE"]        = rowData[22-1:23]
+        record["REQUEST TO CANCEL"] = rowData[24-1]
+        record["TRANSACTION DATE"]  = rowData[25-1:32]
+        record["SUBSCRIBER NAME"]   = rowData[33-1:62]
+        record["BENE FIRST NAME"]   = rowData[63-1:82]
+        record["BENE LAST NAME"]    = rowData[83-1:102]
+        record["PROCESSED REJECTION INDICATOR"] = rowData[103-1]
+        record["PROCESSES REJECTION MESSAGE"]   = rowData[104-1:133]
+        record["FILLER 9"]          = rowData[134-1:199]    
+            
+               
+    else:
+        # Bad structure of the record
+        rowType = "<Unrecognized>"
+        rowStatus = -2
+        exceptions.append(f"INVALID_STRUCTURE#ROW TYPE#Invalid row type")
+
+    record["_ROW_TYPE"]                                    = rowType
+    record["_ROW_STATUS"]                                  = rowStatus
+    record["_ROW_EXCEPTIONS"]                              = exceptions
+    
+    return record
+  
+#---------------------------------------------------------------------------------------------------------------------
+# Form each output row
+#---------------------------------------------------------------------------------------------------------------------
+@log_errors
+def CreateOutputRowStructure(record):
+
+    rowData   = record["value"]
+    rowType   = record["_ROW_TYPE"]
+        
+    if rowType == "HEADER":
+
+        # Header 
+        # Fields:     x in/y out
+        # Transforms: z
+
+        record["_ROW_DATA"] = "|".join([
+            record["LITERAL (DATE=)"],
+            record["PROCESS DATE"],
+            record["SYSTEM DATE"],
+            record["SYSTEM TIME"],
+            record["FILLER 1"],
+            record["DSN"],
+            record["PGM"],
+            record["CLIENT NUMBER"],
+            record["FILLER 9"]
+        ])
+
+
+    elif rowType == "TRAILER":
+
+        # Trailer
+        # Fields:     x in/y out
+        # Transforms: z
+
+        record["_ROW_DATA"] = "|".join([
+            record["LITERAL"],
+            record["RECORD COUNT"],
+            record["PROCESS DATE"],
+            record["SYS DATE"],
+            record["SYS TIME"],
+            record["PROGRAM"],
+            record["CLT NUMBER"],
+            record["FILLER 9"]
+        ])
+
+
+    elif rowType == "RECORD LINE 1":
+
+        # RECORD LINE 1
+        # Fields:     x in/y out
+        # Transforms: z
+
+        record["_ROW_DATA"] = "|".join([
+            record["ACTION"],
+            record["RECORD ID"],
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["NUMBER OF BENE"],
+            record["ACCOUNT TYPE"],
+            #record["NEW FIELD"],
+            record["ACCOUNT CHECK DIGIT"],
+        
+            #Additional
+            record["TOTAL BENEFICIARY"],
+            record["NUMBER OF ACTIVE BENEFICIARY"],
+            record["FILLER 1"],
+            record["FIRST NAME"],
+            record["INITIAL"],
+            record["LAST NAME"],
+            record["STREET LINE 1"],
+            record["STREET LINE 2"],
+            record["APT/SUITE"],
+            record["CITY"],
+            record["PROVINCE/STATE"],
+            record["COUNTRY CODE"],
+            record["POSTAL CODE"] ,
+            record["SUBSCRIBER ADDRESS INDICATOR"],
+            record["FILLER 9"]
+        ])
+
+
+    elif rowType == "RECORD LINE 2":
+
+        # RECORD LINE 2
+        # Fields:     x in/y out
+        # Transforms: z
+
+        record["_ROW_DATA"] = "|".join([
+            record["ACTION"],
+`           record["RECORD ID"],
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["NUMBER OF BENE"],
+            record["ACCOUNT TYPE"],
+            #record["NEW FIELD"],
+            record["ACCOUNT CHECK DIGIT"],
+        
+            #Additional
+            record["FILLER 1"],
+            record["BIRTH DATE"],
+            record["LANGUAGE"],
+            record["SEX"],
+            record["RELATION"],
+            record["BENE GEO CODE"],
+            record["SIN"],
+            record["BENE START DATE"],
+            record["PLAN MATURITY DATE"],
+            record["FIRST CONTACT DATE"],
+            record["REQUESTED GRANT"],
+            record["BENE ADDED DATE"],
+            record["PAC"],
+            record["STATUS CODE"],
+            record["CUSTOMER PARENT"],
+            record["TELEPHONE NUMBER"],
+            record["POST SECONDARY EDUCATION -1: PROGRAM LENGTH"],
+            record["POST SECONDARY EDUCATION -1: PROGRAM TYPE"],
+            record["EDUCATIONAL INSTITUTION POSTAL CODE"],
+            record["EDUCATIONAL INSTITUTION COUNTRY CODE"],
+            record["POST SECONDARY EDUCATION -1: PROGRAM YEAR"],
+            record["ACADEMIC YEAR LENGTH"],
+            record["STATUS DATE"],
+            record["ORIGINATION DATE"],
+            record["RESP CODE"],
+            record["SIBLING ONLY"],
+            record["FILLER 9"]
+        ])
+
+
+    elif rowType == "RECORD LINE 3":
+
+        # RECORD LINE 3
+        # Fields:     x in/y out
+        # Transforms: z
+
+        record["_ROW_DATA"] = "|".join([
+            record["ACTION"],
+            record["RECORD ID"],
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["NUMBER OF BENE"],
+            record["ACCOUNT TYPE"],
+            #record["NEW FIELD"],
+            record["ACCOUNT CHECK DIGIT"],
+
+            #Additional
+            record["FILLER 1"],
+            record["FILLER 2"],
+            record["EDUCATION START DATE"],
+            record["FILLER 3"],
+            record["TRANSFER IN INITIATION DATE"],
+            record["TRANSFER IN COMPLETION DATE"],
+            record["TRANSFER OUT INITIATION DATE"],
+            record["TRANSFER OUT COMPLETION DATE"],
+            record["NUMBER OF PREV BENEFICIARIES"],
+            record["OLD CONTRACT"],
+            record["OLD SPECIMEN NUMBER"],
+            record["YEAR 16/17 INDICATOR"],
+            record["PRIMARY CAREGIVER LAST NAME"],
+            record["PRIMARY CAREGIVER FIRST NAME"],
+            record["PRIMARY CAREGIVER SIN"],
+            record["PRIMARY CAREGIVER ID CODE"],
+            record["REQUEST EDUCATION CESG CODE"],
+            record["REQUEST LEARNING BOND CODE"],
+            record["PROVINCIAL BOND CODE"],
+            record["REQUEST PROVINCIAL BOND CODE"],
+            record["REQUEST QESI CODE"],
+            record["REQUEST QESI START YEAR"],
+            record["FILLER 9"] 
+        ])
+
+        
+    elif rowType == "RECORD LINE 4":
+
+        # RECORD LINE 4
+        # Fields:     x in/y out
+        # Transforms: z
+        
+        record["_ROW_DATA"] = "|".join([
+            record["ACTION"],
+            record["RECORD ID"],
+            record["CLIENT NUMBER"],
+            record["BRANCH NUMBER"],
+            record["ACCOUNT NUMBER"],
+            record["NUMBER OF BENE"],
+            record["ACCOUNT TYPE"],
+            #record["NEW FIELD"],
+            record["ACCOUNT CHECK DIGIT"],
+        
+            #Additional
+            record["GRANT TYPE"],
+            record["BATCH CODE"],
+            record["REQUEST TO CANCEL"],
+            record["TRANSACTION DATE"],
+            record["SUBSCRIBER NAME"],
+            record["BENE FIRST NAME"],
+            record["BENE LAST NAME"],
+            record["PROCESSED REJECTION INDICATOR"],
+            record["PROCESSES REJECTION MESSAGE"],
+            record["FILLER 9"] 
+        ])
+        
+
+    else:
+        # Bad structure of the record
+        record["_ROW_DATA"] = record["value"]
+    
+    return record
