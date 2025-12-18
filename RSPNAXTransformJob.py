@@ -30,7 +30,7 @@ sourceFileName         = fileCode + '.SAMPLEFILE'
 sourceTableName        = 'rspnax_sourcefile'
 
 # S3 bucket and root transformation folder
-bucketURI              = 's3://a5-s3-bucket1'
+bucketURI              = 's3://wdda1-ue1-dev-rise-inbound1'
 transformPath          = bucketURI + '/transformation/'
 
 # shared folders
@@ -76,7 +76,7 @@ def RenameDataLakeFile(s3BucketURI, sourcePath, targetPath, newFileName):
     fs.rename(outputFilePath, Path(targetPath + newFileName))
 
 #---------------------------------------------------------------------------------------------------------------------
-# Read the rspnax sourcefile into a DynamicFrame from the ascii_samplefile Athena table
+# Read the b212 sourcefile into a DynamicFrame from the ascii_samplefile Athena table
 #---------------------------------------------------------------------------------------------------------------------
 
 #source_df = sqlContext.sql("SELECT monotonically_increasing_id() as _ROW_ID, value FROM rise_etl.b212_sourcefile")
@@ -86,18 +86,35 @@ source_df = sqlContext.sql("SELECT monotonically_increasing_id() as _ROW_ID, val
 
 source_dyf = DynamicFrame.fromDF(source_df, glueContext)
 source_dyf.show()
-#---------------------------------------------------------------------------------------------------------------------
-# Read xRef-Exchange lookup table
-#---------------------------------------------------------------------------------------------------------------------
-#xrefExch_df    = sparkSession.read.option("header", True).option("sep", '|').csv(lookupPath + 'x-ref-exchange.txt')
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read xRef-AccountType lookup table
+# #---------------------------------------------------------------------------------------------------------------------
 
-#xrefExchList = map(lambda row: row.asDict(), xrefExch_df.collect())
-#xrefExchLookup = {elem["_Key_Exch"]: elem["_Value_Exch"] for elem in xrefExchList}
+# xrefAccType_df    = sparkSession.read.option("header", True).option("sep", '|').csv(lookupPath + 'x-ref-account-type.txt')
 
-#print(xrefExchLookup)
-#---------------------------------------------------------------------------------------------------------------------
-# Create Map tables
-#---------------------------------------------------------------------------------------------------------------------
+# xrefAccTypeList   = map(lambda row: row.asDict(), xrefAccType_df.collect())
+# xrefAccTypeLookup = {elem["_Key_AccType"]: elem["_Value_AccType"] for elem in xrefAccTypeList}
+
+# print(xrefAccTypeLookup)
+#CD-Trid#
+mapTridCode = {
+           '00': 'XX',
+           '10': 'AX',
+           '71': 'GA',
+           '99': 'TT'
+}
+print(f"Trid: {mapTridCode}")
+
+#CD-Recid#
+mapRecidCode = {
+           '0': 'X',
+           '1': 'A',
+           '2': 'B',
+           '3': 'C',
+           '9': 'T'
+}
+print(f"Recid: {mapRecidCode}")
+
 #CD-01#
 mapLiteratureCode = {
            '1': 'Y',
@@ -364,9 +381,7 @@ mapSpousalBankB = {
             ' ': '0'
 }                
 print(f"27: {mapSpousalBankB}")
-#---------------------------------------------------------------------------------------------------------------------
-# Define structure of each row in the DynamicFrame
-#---------------------------------------------------------------------------------------------------------------------
+
 import logging
 
 def log_errors(inner):
@@ -391,7 +406,7 @@ def CreateSourceRowStructure(record):
     # Check row length
     rowLength = len(rowData)
     
-    if rowLength != 134:
+    if rowLength != 132: ##For testing
         # Row has incorrect length != 134
         rowStatus = -1
         exceptions.append(f"INVALID_LENGHT#ROW#Invalid row length [{rowLength}]")
@@ -401,1739 +416,669 @@ def CreateSourceRowStructure(record):
 
         return record
         
-        # Row has correct length = 134
-        record["CARRIAGE CONTROL"]     = rowData[1-1:1]
-        record["CLIENT−NUMBER"]        = rowData[2-1:4]
-        record["TRID (= 00)"]          = rowData[13-1:14]
-        record["RECORD-1:ID (=1)"]     = rowData[15-1:15]
-        rowType                        = rowData[13-1:15] #(TRID | RECORD-1:ID)
+    # Row has correct length = 134
+    record["CARRIAGE CONTROL"]     = rowData[1-1:1]
+    record["CLIENT−NUMBER"]        = rowData[2-1:4]
+    rowType                        = rowData[13-1:15] #(TRID | RECORD-1:ID)
+    
+    #CD-Trid#
+    tridCode                      = rowData[13-1:14]
+    tridCodeMap                   = mapTridCode.get(tridCode)
+              
+    if tridCodeMap is not None:
+        record["TRID (= 00)"] = tridCodeMap
+    else:
+        record["TRID (= 00)"] = tridCode
+        rowStatus = -3
+        exceptions.append(f"INVALID_MAP#TRID−CODE#No mapped value for [{tridCode}]")
         
+    #CD-Recid#
+    recidCode                      = rowData[15-1:15]
+    recidCodeMap                   = mapRecidCode.get(recidCode)
+              
+    if recidCodeMap is not None:
+        record["RECORD-1:ID (=1)"] = recidCodeMap
+    else:
+        record["RECORD-1:ID (=1)"] = recidCode
+        rowStatus = -3
+        exceptions.append(f"INVALID_MAP#TRID−CODE#No mapped value for [{recidCode}]")
         
     if rowType == "000":
         # Row type: HEADER (000)
-            rowType = "HEADER"          
-            record["ACCOUNT−NUMBER (BBBAAAAA)"] = rowData[5-1:12]
+        rowType = "HEADER"          
+        record["ACCOUNT−NUMBER (BBBAAAAA)"] = rowData[5-1:12]
             
-            record["HEADER ID DATE="]           = rowData[16-1:20]
-            record["HEADER DATE-1:MM"]          = rowData[21-1:22]            
-            record["HEADER DATE-1:DD"]          = rowData[23-1:24]            
-            record["HEADER DATE-1:YY"]          = rowData[25-1:26]            
-            record["HEADER P2 DATA"]            = rowData[27-1:133]
+        record["HEADER ID DATE="]           = rowData[16-1:20]
+        record["HEADER DATE-1:MM"]          = rowData[21-1:22]            
+        record["HEADER DATE-1:DD"]          = rowData[23-1:24]            
+        record["HEADER DATE-1:YY"]          = rowData[25-1:26]            
+        record["HEADER P2 DATA"]            = rowData[27-1:133]
 
     elif rowType == "001":
         # Row type: REGISTERED PLAN RECORD (001)        
-            rowType = "REGISTERED PLAN RECORD"
-            record["BRANCH"]                               = rowData[5-7]
-            record["ACCOUNT"]                              = rowData[8-12]
+        rowType = "REGISTERED PLAN RECORD"
+        record["BRANCH"]                               = rowData[5-7]
+        record["ACCOUNT"]                              = rowData[8-12]
             
-            record["ACCOUNT−TYPE (SHOULD ALWAYS = 1)"]     = rowData[16-1:16]            
-            record["ACCOUNT−CHECK−DIGIT"]                  = rowData[17-1:17]
-            branch                                         = rowData[5-7]        
-            account                                        = rowData[8-12]
-            accountType                                    = rowData[16-1:16]
-            accountCheckDigit                              = rowData[17-1:17]
-            record["New Field: CONCATENATE (Branch+Account+Type+Check)"] = branch + account + accountType + accountCheckDigit
+        record["ACCOUNT−TYPE (SHOULD ALWAYS = 1)"]     = rowData[16-1:16]            
+        record["ACCOUNT−CHECK−DIGIT"]                  = rowData[17-1:17]
+        branch                                         = rowData[5-7]        
+        account                                        = rowData[8-12]
+        accountType                                    = rowData[16-1:16]
+        accountCheckDigit                              = rowData[17-1:17]
+        record["New Field: CONCATENATE (Branch+Account+Type+Check)"] = branch + account + accountType + accountCheckDigit
 
-            #CD-01#
-            literatureCode                      = rowData[18-1:18]
-            literatureCodeMap                   = mapLiteratureCode.get(literatureCode)
+        #CD-01#
+        literatureCode                      = rowData[18-1:18]
+        literatureCodeMap                   = mapLiteratureCode.get(literatureCode)
               
-            if literatureCodeMap is not None:
-                      record["LITERATURE−CODE"] = literatureCodeMap
-            else:
-                      record["LITERATURE−CODE"] = literatureCode
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#LITERATURE−CODE#No mapped value for [{literatureCode}]")
+        if literatureCodeMap is not None:
+            record["LITERATURE−CODE"] = literatureCodeMap
+        else:
+            record["LITERATURE−CODE"] = literatureCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#LITERATURE−CODE#No mapped value for [{literatureCode}]")
                       
-            #CD-02#
-            planType                            = rowData[19-1:19]
-            planTypeMap                         = mapPlanType.get(PlanType)
+        #CD-02#
+        planType                            = rowData[19-1:19]
+        planTypeMap                         = mapPlanType.get(PlanType)
               
-            if planTypeMap is not None:
-                      record["PLAN−TYPE"]       = planTypeMap
-            else:
-                      record["PLAN−TYPE"]       = planType
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#PLAN−TYPE #No mapped value for [{planType}]")
+        if planTypeMap is not None:
+            record["PLAN−TYPE"]       = planTypeMap
+        else:
+            record["PLAN−TYPE"]       = planType
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#PLAN−TYPE #No mapped value for [{planType}]")
 
-            #CD-03#
-            accountStatus                       = rowData[20-1:20]
-            accountStatusMap                    = mapAccountStatus.get(accountStatus)
+        #CD-03#
+        accountStatus                       = rowData[20-1:20]
+        accountStatusMap                    = mapAccountStatus.get(accountStatus)
               
-            if accountStatuseMap is not None:
-                      record["ACCOUNT−STATUS"]  = accountStatuseMap
-            else:
-                      record["ACCOUNT−STATUS"]  = accountStatus
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#PLAN−TYPE #No mapped value for [{accountStatus}]")                     
+        if accountStatuseMap is not None:
+            record["ACCOUNT−STATUS"]  = accountStatuseMap
+        else:
+            record["ACCOUNT−STATUS"]  = accountStatus
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#PLAN−TYPE #No mapped value for [{accountStatus}]")                     
 
-            #CD-04#
-            rrifSuccessorCode                   = rowData[21-1:21]        
-            rrifSuccessorCodeMap                = mapRrifSuccessorCode.get(rrifSuccessorCode)
+        #CD-04#
+        rrifSuccessorCode                   = rowData[21-1:21]        
+        rrifSuccessorCodeMap                = mapRrifSuccessorCode.get(rrifSuccessorCode)
               
-            if rrifSuccessorCodeMap is not None:
-                      record["RRIF−SUCCESSOR−CODE"] = rrifSuccessorCodeMap
-            else:
-                      record["RRIF−SUCCESSOR−CODE"] = rrifSuccessorCode
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#RRIF−SUCCESSOR−CODE #No mapped value for [{rrifSuccessorCode}]")                         
+        if rrifSuccessorCodeMap is not None:
+            record["RRIF−SUCCESSOR−CODE"] = rrifSuccessorCodeMap
+        else:
+            record["RRIF−SUCCESSOR−CODE"] = rrifSuccessorCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#RRIF−SUCCESSOR−CODE #No mapped value for [{rrifSuccessorCode}]")                         
 
-            #CD-05#
-            rspApplicationCode                  = rowData[22-1:22]                
-            rspApplicationCodeMap               = mapRspApplicationCode.get(rspApplicationCode)
+        #CD-05#
+        rspApplicationCode                  = rowData[22-1:22]                
+        rspApplicationCodeMap               = mapRspApplicationCode.get(rspApplicationCode)
               
-            if rspApplicationCodeMap is not None:
-                      record["RSP−APPLICATION−CODE"] = rspApplicationCodeMap
-            else:
-                      record["RSP−APPLICATION−CODE"] = rspApplicationCode
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#RSP−APPLICATION−CODE #No mapped value for [{rspApplicationCode}]")
+        if rspApplicationCodeMap is not None:
+            record["RSP−APPLICATION−CODE"] = rspApplicationCodeMap
+        else:
+            record["RSP−APPLICATION−CODE"] = rspApplicationCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#RSP−APPLICATION−CODE #No mapped value for [{rspApplicationCode}]")
 
-            record["RSP−TYPE (FUTURE USE)"]     = rowData[23-1:24]            
-            record["TAX−GEO−CODE"]              = rowData[25-1:27]
+        record["RSP−TYPE (FUTURE USE)"]     = rowData[23-1:24]            
+        record["TAX−GEO−CODE"]              = rowData[25-1:27]
                       
-            #CD-06#
-            lockInPlanCode                      = rowData[28-1:28]        
-            lockInPlanCodeMap                   = mapLockInPlanCode.get(lockInPlanCode)
+        #CD-06#
+        lockInPlanCode                      = rowData[28-1:28]        
+        lockInPlanCodeMap                   = mapLockInPlanCode.get(lockInPlanCode)
               
-            if lockInPlanCodeMap is not None:
-                      record["LOCK−IN−PLAN−CODE"] = lockInPlanCodeMap
-            else:
-                      record["LOCK−IN−PLAN−CODE"] = lockInPlanCode
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#LOCK−IN−PLAN−CODE #No mapped value for [{lockInPlanCode}]")
+        if lockInPlanCodeMap is not None:
+            record["LOCK−IN−PLAN−CODE"] = lockInPlanCodeMap
+        else:
+            record["LOCK−IN−PLAN−CODE"] = lockInPlanCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#LOCK−IN−PLAN−CODE #No mapped value for [{lockInPlanCode}]")
             
-            record["LOCK−IN−PLAN−DATE−CC"]      = rowData[29-1:30]            
-            record["LOCK−IN−PLAN−DATE−YY"]      = rowData[31-1:32]            
-            record["LOCK−IN−PLAN−DATE−MM"]      = rowData[33-1:34]
+        record["LOCK−IN−PLAN−DATE−CC"]      = rowData[29-1:30]            
+        record["LOCK−IN−PLAN−DATE−YY"]      = rowData[31-1:32]            
+        record["LOCK−IN−PLAN−DATE−MM"]      = rowData[33-1:34]
 
-            #CD-07#
-            lockInPlanDate                      = rowData[35-1:36]        
-            lockInPlanDateMap                   = mapLockInPlanDate.get(lockInPlanDate)
+        #CD-07#
+        lockInPlanDate                      = rowData[35-1:36]        
+        lockInPlanDateMap                   = mapLockInPlanDate.get(lockInPlanDate)
               
-            if lockInPlanDateMap is not None:
-                      record["LOCK−IN−PLAN−DATE−DD"] = lockInPlanDateMap
-            else:
-                      record["LOCK−IN−PLAN−DATE−DD"] = lockInPlanDate
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#LOCK−IN−PLAN−DATE−DD #No mapped value for [{lockInPlanDate}]")
+        if lockInPlanDateMap is not None:
+            record["LOCK−IN−PLAN−DATE−DD"] = lockInPlanDateMap
+        else:
+            record["LOCK−IN−PLAN−DATE−DD"] = lockInPlanDate
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#LOCK−IN−PLAN−DATE−DD #No mapped value for [{lockInPlanDate}]")
 
-            record["’YT’ = YUKON"]              = rowData[37-1:38]
+        record["’YT’ = YUKON"]              = rowData[37-1:38]
 
-            #CD-08#
-            closeReason                         = rowData[39-1:40]        
-            closeReasonMap                      = mapCloseReason.get(closeReason)
+        #CD-08#
+        closeReason                         = rowData[39-1:40]        
+        closeReasonMap                      = mapCloseReason.get(closeReason)
               
-            if closeReasonMap is not None:
-                      record["CLOSE−REASON − CLIENT DEFINED"]     = closeReasonMap
-            else:
-                      record["CLOSE−REASON − CLIENT DEFINED"]     = closeReason
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#CLOSE−REASON − CLIENT DEFINED #No mapped value for [{closeReason}]")
+        if closeReasonMap is not None:
+            record["CLOSE−REASON − CLIENT DEFINED"]     = closeReasonMap
+        else:
+            record["CLOSE−REASON − CLIENT DEFINED"]     = closeReason
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#CLOSE−REASON − CLIENT DEFINED #No mapped value for [{closeReason}]")
                               
-            #CD-09#
-            feePaidCode                         = rowData[41-1:41]                
-            feePaidCodeMap                      = mapFeePaidCode.get(feePaidCode)
+        #CD-09#
+        feePaidCode                         = rowData[41-1:41]                
+        feePaidCodeMap                      = mapFeePaidCode.get(feePaidCode)
               
-            if feePaidCodeMap is not None:
-                      record["FEE−PAID−CODE"]   = feePaidCodeMap
-            else:
-                      record["FEE−PAID−CODE"]   = feePaidCode
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#FEE−PAID−CODE #No mapped value for [{feePaidCode}]")
-              
-            record["FILLER"]                    = rowData[42-1:42]            
-            record["FEE−TYPE"]                  = rowData[43-1:43]            
-            record["SPOUSAL−NAME"]              = rowData[44-1:73]            
-            record["SPOUSAL−SIN"]               = rowData[74-1:82]
+        if feePaidCodeMap is not None:
+            record["FEE−PAID−CODE"]   = feePaidCodeMap
+        else:
+            record["FEE−PAID−CODE"]   = feePaidCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#FEE−PAID−CODE #No mapped value for [{feePaidCode}]")
+            
+        filler1                             = rowData[42-1:42]
+        if filler1 == " " * 1:
+            record["FILLER 1"]              = filler1
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[41:42] (1)#Filler containing data [{filler1}]")
+                       
+        record["FEE−TYPE"]                  = rowData[43-1:43]            
+        record["SPOUSAL−NAME"]              = rowData[44-1:73]            
+        record["SPOUSAL−SIN"]               = rowData[74-1:82]
 
-            #CD-10#
-            spousalEver                         = rowData[83-1:83]                
-            spousalEverMap                      = mapSpousalEver.get(spousalEver)
+        #CD-10#
+        spousalEver                         = rowData[83-1:83]                
+        spousalEverMap                      = mapSpousalEver.get(spousalEver)
               
-            if spousalEverMap is not None:
-                      record["SPOUSAL−EVER"]    = spousalEverMap
-            else:
-                      record["SPOUSAL−EVER"]    = spousalEver
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#SPOUSAL−EVER #No mapped value for [{spousalEver}]")
+        if spousalEverMap is not None:
+            record["SPOUSAL−EVER"]    = spousalEverMap
+        else:
+            record["SPOUSAL−EVER"]    = spousalEver
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#SPOUSAL−EVER #No mapped value for [{spousalEver}]")
                       
-            record["SPOUSAL−BIRTHDATE−CC"]      = rowData[84-1:85]            
-            record["SPOUSAL−BIRTHDATE−YY"]      = rowData[86 -87]            
-            record["SPOUSAL−BIRTHDATE−MM"]      = rowData[88 -89]            
-            record["SPOUSAL−BIRTHDATE−DD"]      = rowData[90 -91]         
+        record["SPOUSAL−BIRTHDATE−CC"]      = rowData[84-1:85]            
+        record["SPOUSAL−BIRTHDATE−YY"]      = rowData[86 -87]            
+        record["SPOUSAL−BIRTHDATE−MM"]      = rowData[88 -89]            
+        record["SPOUSAL−BIRTHDATE−DD"]      = rowData[90 -91]         
 
-            #CD-11#
-            spousalAnnuity                      = rowData[92-1:92]                
-            spousalAnnuityMap                   = mapSpousalAnnuity.get(spousalAnnuity)
+        #CD-11#
+        spousalAnnuity                      = rowData[92-1:92]                
+        spousalAnnuityMap                   = mapSpousalAnnuity.get(spousalAnnuity)
               
-            if spousalAnnuityMap is not None:
-                      record["SPOUSAL−ANNUITY"] = spousalAnnuityMap
-            else:
-                      record["SPOUSAL−ANNUITY"] = spousalAnnuity
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#SPOUSAL−ANNUITY #No mapped value for [{spousalAnnuity}]")
+        if spousalAnnuityMap is not None:
+            record["SPOUSAL−ANNUITY"] = spousalAnnuityMap
+        else:
+            record["SPOUSAL−ANNUITY"] = spousalAnnuity
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#SPOUSAL−ANNUITY #No mapped value for [{spousalAnnuity}]")
                       
-            record["BENEFICIARY−1−NAME"]        = rowData[93-1:122]            
-            record["BENEFICIARY−1−SIN"]         = rowData[123-1:131]            
-            record["FILLER"]                    = rowData[132-1:133]
+        record["BENEFICIARY−1−NAME"]        = rowData[93-1:122]            
+        record["BENEFICIARY−1−SIN"]         = rowData[123-1:131] 
+            
+        filler9                             = rowData[132-1:133]
+        if filler9 == " " * 2:
+            record["FILLER 9"]              = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[131:133] (9)#Filler containing data [{filler9}]")            
 
             
     elif rowType == "002":
         # Row type: PRINCIPAL RECORD 2 (002)
-            rowType = "PRINCIPAL RECORD 2"
-            record["BRANCH"]                    = rowData[5-7]            
-            record["ACCOUNT"]                   = rowData[8-12]
+        rowType = "PRINCIPAL RECORD 2"
+        record["BRANCH"]                    = rowData[5-7]            
+        record["ACCOUNT"]                   = rowData[8-12]
 
-            record["BENEFICIARY−1−RELATION"]    = rowData[16-1:25]            
-            record["BENEFICIARY−1−MISC"]        = rowData[26-1:35]            
-            record["BENEFICIARY−2−NAME"]        = rowData[36-1:65]            
-            record["BENEFICIARY−2−SIN−1"]       = rowData[66-1:74]            
-            record["BENEFICIARY−2−RELATION"]    = rowData[75-1:84]            
-            record["BENEFICIARY−2−MISC"]        = rowData[85-1:94]            
-            record["PREVIOUS−GEO−CODE"]         = rowData[95 -97]            
-            record["GEO-DATE-CC"]               = rowData[98-1:99]            
-            record["GEO-DATE-YY"]               = rowData[100-1:101]            
-            record["GEO-DATE-MM"]               = rowData[102-1:103]            
-            record["GEO-DATE-DD"]               = rowData[104-1:105]            
-            record["OPEN−DATE−CC"]              = rowData[106-1:107]            
-            record["OPEN−DATE−YY"]              = rowData[108-1:109]            
-            record["OPEN−DATE−MM"]              = rowData[110-1:111]            
-            record["OPEN−DATE−DD"]              = rowData[112-1:113]            
-            record["CLOSE−DATE−CC"]             = rowData[114-1:115]            
-            record["CLOSE−DATE−YY"]             = rowData[116-1:117]            
-            record["CLOSE−DATE−MM"]             = rowData[118-1:119]            
-            record["CLOSE−DATE−DD"]             = rowData[120-1:121]            
-            record["CHANGE−DATE−CC"]            = rowData[122-1:123]            
-            record["CHANGE−DATE−YY"]            = rowData[124-1:125]            
-            record["CHANGE−DATE−MM"]            = rowData[126-1:127]            
-            record["CHANGE−DATE−DD"]            = rowData[128-1:129]
+        record["BENEFICIARY−1−RELATION"]    = rowData[16-1:25]            
+        record["BENEFICIARY−1−MISC"]        = rowData[26-1:35]            
+        record["BENEFICIARY−2−NAME"]        = rowData[36-1:65]            
+        record["BENEFICIARY−2−SIN−1"]       = rowData[66-1:74]            
+        record["BENEFICIARY−2−RELATION"]    = rowData[75-1:84]            
+        record["BENEFICIARY−2−MISC"]        = rowData[85-1:94]            
+        record["PREVIOUS−GEO−CODE"]         = rowData[95 -97]            
+        record["GEO-DATE-CC"]               = rowData[98-1:99]            
+        record["GEO-DATE-YY"]               = rowData[100-1:101]            
+        record["GEO-DATE-MM"]               = rowData[102-1:103]            
+        record["GEO-DATE-DD"]               = rowData[104-1:105]            
+        record["OPEN−DATE−CC"]              = rowData[106-1:107]            
+        record["OPEN−DATE−YY"]              = rowData[108-1:109]            
+        record["OPEN−DATE−MM"]              = rowData[110-1:111]            
+        record["OPEN−DATE−DD"]              = rowData[112-1:113]            
+        record["CLOSE−DATE−CC"]             = rowData[114-1:115]            
+        record["CLOSE−DATE−YY"]             = rowData[116-1:117]            
+        record["CLOSE−DATE−MM"]             = rowData[118-1:119]            
+        record["CLOSE−DATE−DD"]             = rowData[120-1:121]            
+        record["CHANGE−DATE−CC"]            = rowData[122-1:123]            
+        record["CHANGE−DATE−YY"]            = rowData[124-1:125]            
+        record["CHANGE−DATE−MM"]            = rowData[126-1:127]            
+        record["CHANGE−DATE−DD"]            = rowData[128-1:129]
 
-            #CD-12#
-            registrationCode                    = rowData[130-1:130]                
-            registrationCodeMap                 = mapRegistrationCode.get(registrationCode)
+        #CD-12#
+        registrationCode                    = rowData[130-1:130]                
+        registrationCodeMap                 = mapRegistrationCode.get(registrationCode)
               
-            if registrationCodeMap is not None:
-                      record["REGISTRATION−CODE"]     = registrationCodeMap
-            else:
-                      record["REGISTRATION−CODE"]     = registrationCode
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#REGISTRATION−CODE #No mapped value for [{registrationCode}]")
+        if registrationCodeMap is not None:
+            record["REGISTRATION−CODE"]     = registrationCodeMap
+        else:
+            record["REGISTRATION−CODE"]     = registrationCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#REGISTRATION−CODE #No mapped value for [{registrationCode}]")
 
-            record["SIBLING−NUMBER"]            = rowData[131-1:132]            
-            record["FILLER"]                    = rowData[133-1:133]
+        record["SIBLING−NUMBER"]            = rowData[131-1:132]            
             
+        filler9                             = rowData[132-1:133]
+        if filler9 == " " * 2:
+            record["FILLER 9"]              = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[131:133] (9)#Filler containing data [{filler9}]")            
+          
             
     elif rowType == "003":
         # Row type: PRINCIPAL RECORD 3 (003)        
-            rowType = "PRINCIPAL RECORD 3"
-            record["BRANCH"]                    = rowData[5-7]            
-            record["ACCOUNT"]                   = rowData[8-12]
+        rowType = "PRINCIPAL RECORD 3"
+        record["BRANCH"]                    = rowData[5-7]            
+        record["ACCOUNT"]                   = rowData[8-12]
               
-            record["GROUP−NO"]                  = rowData[16-1:21]            
-            record["Filler"]                    = rowData[22-1:133]
+        record["GROUP−NO"]                  = rowData[16-1:21]
+            
+        filler9                             = rowData[22-1:133]
+        if filler9 == " " * 112:
+            record["FILLER 9"]              = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[21:133] (9)#Filler containing data [{filler9}]")            
                       
                               
     elif rowType == "101":
         # Row type: RRIF PAY INFO RECORD 1 (101)
-            rowType = "RRIF PAY INFO RECORD 1"
-            record["BRANCH"]                    = rowData[5-7]            
-            record["ACCOUNT"]                   = rowData[8-12]
+        rowType = "RRIF PAY INFO RECORD 1"
+        record["BRANCH"]                    = rowData[5-7]            
+        record["ACCOUNT"]                   = rowData[8-12]
 
-            record["RIF-YE-VALUE"]              = rowData[16-1:24]            
-            record["RR1-TERM"]                  = rowData[25-1:26]            
-            record["FILLER"]                    = rowData[27-1:28]               
+        record["RIF-YE-VALUE"]              = rowData[16-1:24]            
+        record["RR1-TERM"]                  = rowData[25-1:26]
+            
+        filler1                             = rowData[27-1:28]
+        if filler1 == " " * 2:
+            record["FILLER 1"]              = filler1
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[26:28] (1)#Filler containing data [{filler1}]")           
               
-            #CD-13#
-            payFrequency                        = rowData[29 -29]                
-            payFrequencyMap                     = mapPayFrequency.get(payFrequency)
+        #CD-13#
+        payFrequency                        = rowData[29-1:29]                
+        payFrequencyMap                     = mapPayFrequency.get(payFrequency)
               
-            if payFrequencyMap is not None:
-                      record["PAY-FREQUENCY"]   = payFrequencyMap
-            else:
-                      record["PAY-FREQUENCY"]   = payFrequency
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#PAY-FREQUENCY #No mapped value for [{payFrequency}]")
+        if payFrequencyMap is not None:
+            record["PAY-FREQUENCY"]   = payFrequencyMap
+        else:
+            record["PAY-FREQUENCY"]   = payFrequency
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#PAY-FREQUENCY #No mapped value for [{payFrequency}]")
 
-            #CD-14#
-            payMethod                           = rowData[30-1:34]        
-            payMethodMap                        = mapPayMethod.get(payMethod)
+        #CD-14#
+        payMethod                           = rowData[30-1:34]        
+        payMethodMap                        = mapPayMethod.get(payMethod)
               
-            if payMethodMap is not None:
-                      record["PAY-FREQUENCY"]   = payMethodMap
-            else:
-                      record["PAY-FREQUENCY"]   = payMethod
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#PAY-FREQUENCY #No mapped value for [{payMethod}]")
+        if payMethodMap is not None:
+            record["PAY-FREQUENCY"]   = payMethodMap
+        else:
+            record["PAY-FREQUENCY"]   = payMethod
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#PAY-FREQUENCY #No mapped value for [{payMethod}]")
 
-            record["RR-AGENT"]                  = rowData[35-1:38]            
-            record["RR-BANK-TRANSIT"]           = rowData[39 -43]            
-            record["RR-BANK-ACCOUNT"]           = rowData[44-1:48]
-
-            #CD-15#
-            grossNetInd                         = rowData[59-1:59]                
-            grossNetIndMap                      = mapGrossNetInd.get(grossNetInd)
+        record["RR-AGENT"]                  = rowData[35-1:38]            
+        record["RR-BANK-TRANSIT"]           = rowData[39-1:43]            
+        record["RR-BANK-ACCOUNT"]           = rowData[44-1:48]
+            
+        filler2                             = rowData[49-1:59]
+        if filler1 == " " * 11:
+            record["FILLER 2"]              = filler2
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[48:59] (2)#Filler containing data [{filler2}]")           
               
-            if grossNetIndMap is not None:
-                      record["GROSS-NET-IND"]   = grossNetIndMap
-            else:
-                      record["GROSS-NET-IND"]   = grossNetInd
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#GROSS-NET-IND #No mapped value for [{grossNetInd}]")
 
-            #CD-16#
-            withholdTax                         = rowData[60-1:60]                
-            withholdTaxMap                      = mapWithholdTax.get(withholdTax)
+        #CD-15#
+        grossNetInd                         = rowData[59-1:59]                
+        grossNetIndMap                      = mapGrossNetInd.get(grossNetInd)
+              
+        if grossNetIndMap is not None:
+            record["GROSS-NET-IND"]   = grossNetIndMap
+        else:
+            record["GROSS-NET-IND"]   = grossNetInd
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#GROSS-NET-IND #No mapped value for [{grossNetInd}]")
+
+        #CD-16#
+        withholdTax                         = rowData[60-1:60]                
+        withholdTaxMap                      = mapWithholdTax.get(withholdTax)
                       
-            if withholdTaxMap is not None:
-                      record["WITHHOLD-TAX"]    = withholdTaxMap
-            else:
-                      record["WITHHOLD-TAX"]    = withholdTax
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#WITHHOLD-TAX #No mapped value for [{withholdTax}]")
+        if withholdTaxMap is not None:
+            record["WITHHOLD-TAX"]    = withholdTaxMap
+        else:
+            record["WITHHOLD-TAX"]    = withholdTax
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#WITHHOLD-TAX #No mapped value for [{withholdTax}]")
                       
-            record["FIRST PAYMENT-1:CC"]        = rowData[61-1:62]            
-            record["FIRST PAYMENT-1:YY"]        = rowData[63-1:64]            
-            record["FIRST PAYMENT-1:MM"]        = rowData[65-1:66]            
-            record["FIRST PAYMENT-1:DD"]        = rowData[67-1:68]            
-            record["FIRST PAYMENT-1:AMOUNT"]    = rowData[69-1:77]            
-            record["ELECTED PAY-1:AMOUNT"]      = rowData[78-1:86]            
-            record["MINIMUM PAY-1:AMOUNT"]      = rowData[87-1:95]            
-            record["ALTERNATE DATE-1:CC"]       = rowData[96-1:97]            
-            record["ALTERNATE DATE-1:YY"]       = rowData[98-1:99]            
-            record["ALTERNATE DATE-1:MM"]       = rowData[100-1:101]            
-            record["ALTERNATE DATE-1:DD"]       = rowData[102-1:103]
+        record["FIRST PAYMENT-1:CC"]        = rowData[61-1:62]            
+        record["FIRST PAYMENT-1:YY"]        = rowData[63-1:64]            
+        record["FIRST PAYMENT-1:MM"]        = rowData[65-1:66]            
+        record["FIRST PAYMENT-1:DD"]        = rowData[67-1:68]            
+        record["FIRST PAYMENT-1:AMOUNT"]    = rowData[69-1:77]            
+        record["ELECTED PAY-1:AMOUNT"]      = rowData[78-1:86]            
+        record["MINIMUM PAY-1:AMOUNT"]      = rowData[87-1:95]            
+        record["ALTERNATE DATE-1:CC"]       = rowData[96-1:97]            
+        record["ALTERNATE DATE-1:YY"]       = rowData[98-1:99]            
+        record["ALTERNATE DATE-1:MM"]       = rowData[100-1:101]            
+        record["ALTERNATE DATE-1:DD"]       = rowData[102-1:103]
 
-            #CD-17#
-            alternateGrossIndicator             = rowData[104-1:104]                
-            alternateGrossIndicatorMap          = mapAlternateGrossIndicator.get(alternateGrossIndicator)
+        #CD-17#
+        alternateGrossIndicator             = rowData[104-1:104]                
+        alternateGrossIndicatorMap          = mapAlternateGrossIndicator.get(alternateGrossIndicator)
                       
-            if alternateGrossIndicatorMap is not None:
-                      record["ALTERNATE GROSS/NET INDICATOR"]     = alternateGrossIndicatorMap
-            else:
-                      record["ALTERNATE GROSS/NET INDICATOR"]     = alternateGrossIndicator
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#ALTERNATE GROSS/NET INDICATOR #No mapped value for [{alternateGrossIndicator}]")               
+        if alternateGrossIndicatorMap is not None:
+            record["ALTERNATE GROSS/NET INDICATOR"]     = alternateGrossIndicatorMap
+        else:
+            record["ALTERNATE GROSS/NET INDICATOR"]     = alternateGrossIndicator
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#ALTERNATE GROSS/NET INDICATOR #No mapped value for [{alternateGrossIndicator}]")               
           
-            #CD-18#
-            spousalContributionCode             = rowData[105-1:105]        
-            spousalContributionCodeMap          = mapSpousalContributionCode.get(spousalContributionCode)
+        #CD-18#
+        spousalContributionCode             = rowData[105-1:105]        
+        spousalContributionCodeMap          = mapSpousalContributionCode.get(spousalContributionCode)
                       
-            if alternateGrossIndicatorMap is not None:
-                      record["SPOUSAL CONTRIBUTION CODE"]     = alternateGrossIndicatorMap
-            else:
-                      record["SPOUSAL CONTRIBUTION CODE"]     = spousalContributionCode
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#SPOUSAL CONTRIBUTION CODE #No mapped value for [{spousalContributionCode}]")               
+        if alternateGrossIndicatorMap is not None:
+            record["SPOUSAL CONTRIBUTION CODE"]     = alternateGrossIndicatorMap
+        else:
+            record["SPOUSAL CONTRIBUTION CODE"]     = spousalContributionCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#SPOUSAL CONTRIBUTION CODE #No mapped value for [{spousalContributionCode}]")               
 
-            record["MAX PAY AMOUNT"]                         = rowData[106-1:114]            
-            record["ALTERNATE PAY EVER-1:EVERY JAN"]         = rowData[115-1:115]            
-            record["ALTERNATE PAY EVER-1:EVERY FEB"]         = rowData[116- 116]            
-            record["ALTERNATE PAY EVER-1:EVERY MAR"]         = rowData[117-1:117]            
-            record["ALTERNATE PAY EVER-1:EVERY APR"]         = rowData[118-1:118]            
-            record["ALTERNATE PAY EVER-1:EVERY MAY"]         = rowData[119-1:119]            
-            record["ALTERNATE PAY EVER-1:EVERY JUN"]         = rowData[120-1:120]            
-            record["ALTERNATE PAY EVER-1:EVERY JUL"]         = rowData[121-1:121]            
-            record["ALTERNATE PAY EVER-1:EVERY AUG"]         = rowData[122-1:122]            
-            record["ALTERNATE PAY EVER-1:EVERY SEP"]         = rowData[123-1:123]            
-            record["ALTERNATE PAY EVER-1:EVERY OCT"]         = rowData[124-1:124]            
-            record["ALTERNATE PAY EVER-1:EVERY NOV"]         = rowData[125-1:125]            
-            record["ALTERNATE PAY EVER-1:EVERY DEC"]         = rowData[126-1:126]            
-            record["FILLER"]                                 = rowData[127-1:133]                 
+        record["MAX PAY AMOUNT"]                         = rowData[106-1:114]            
+        record["ALTERNATE PAY EVER-1:EVERY JAN"]         = rowData[115-1:115]            
+        record["ALTERNATE PAY EVER-1:EVERY FEB"]         = rowData[116- 116]            
+        record["ALTERNATE PAY EVER-1:EVERY MAR"]         = rowData[117-1:117]            
+        record["ALTERNATE PAY EVER-1:EVERY APR"]         = rowData[118-1:118]            
+        record["ALTERNATE PAY EVER-1:EVERY MAY"]         = rowData[119-1:119]            
+        record["ALTERNATE PAY EVER-1:EVERY JUN"]         = rowData[120-1:120]            
+        record["ALTERNATE PAY EVER-1:EVERY JUL"]         = rowData[121-1:121]            
+        record["ALTERNATE PAY EVER-1:EVERY AUG"]         = rowData[122-1:122]            
+        record["ALTERNATE PAY EVER-1:EVERY SEP"]         = rowData[123-1:123]            
+        record["ALTERNATE PAY EVER-1:EVERY OCT"]         = rowData[124-1:124]            
+        record["ALTERNATE PAY EVER-1:EVERY NOV"]         = rowData[125-1:125]            
+        record["ALTERNATE PAY EVER-1:EVERY DEC"]         = rowData[126-1:126]
+            
+        filler9                                          = rowData[127-1:133]
+        if filler9 == " " * 7:
+            record["FILLER 9"]              = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[126:133] (9)#Filler containing data [{filler9}]")            
                       
                               
     elif rowType == "102":
         # Row type: RRIF PAY INFO RECORD 2 (102)        
-            rowType = "RRIF PAY INFO RECORD 2"
-            record["BRANCH"]                    = rowData[5-7]            
-            record["ACCOUNT"]                   = rowData[8-12]
+        rowType = "RRIF PAY INFO RECORD 2"
+        record["BRANCH"]                    = rowData[5-7]            
+        record["ACCOUNT"]                   = rowData[8-12]
               
-            record["JAN PAY-1:AMOUNT"]          = rowData[16-1:24]            
-            record["FEB PAY-1:AMOUNT"]          = rowData[25-1:33]            
-            record["MAR PAY-1:AMOUNT"]          = rowData[34-1:42]            
-            record["APR PAY-1:AMOUNT"]          = rowData[43-1:51]            
-            record["MAY PAY-1:AMOUNT"]          = rowData[52-1:60]            
-            record["JUN PAY-1:AMOUNT"]          = rowData[61-1:69]            
-            record["JUL PAY-1:AMOUNT"]          = rowData[70-1:78]            
-            record["AUG PAY-1:AMOUNT"]          = rowData[79-1:87]            
-            record["SEP PAY-1:AMOUNT"]          = rowData[88-1:96]            
-            record["OCT PAY-1:AMOUNT"]          = rowData[97-1:105]            
-            record["NOV PAY-1:AMOUNT"]          = rowData[106-1:114]            
-            record["DEC PAY-1:AMOUNT"]          = rowData[115-1:123]
+        record["JAN PAY-1:AMOUNT"]          = rowData[16-1:24]            
+        record["FEB PAY-1:AMOUNT"]          = rowData[25-1:33]            
+        record["MAR PAY-1:AMOUNT"]          = rowData[34-1:42]            
+        record["APR PAY-1:AMOUNT"]          = rowData[43-1:51]            
+        record["MAY PAY-1:AMOUNT"]          = rowData[52-1:60]            
+        record["JUN PAY-1:AMOUNT"]          = rowData[61-1:69]            
+        record["JUL PAY-1:AMOUNT"]          = rowData[70-1:78]            
+        record["AUG PAY-1:AMOUNT"]          = rowData[79-1:87]            
+        record["SEP PAY-1:AMOUNT"]          = rowData[88-1:96]            
+        record["OCT PAY-1:AMOUNT"]          = rowData[97-1:105]            
+        record["NOV PAY-1:AMOUNT"]          = rowData[106-1:114]            
+        record["DEC PAY-1:AMOUNT"]          = rowData[115-1:123]
 
-            #CD-19#
-            alternateWithholdingTax1Option      = rowData[124-1:124]        
-            alternateWithholdingTax1OptionMap   = mapAlternateWithholdingTax1Option.get(alternateWithholdingTax1Option)
+        #CD-19#
+        alternateWithholdingTax1Option      = rowData[124-1:124]        
+        alternateWithholdingTax1OptionMap   = mapAlternateWithholdingTax1Option.get(alternateWithholdingTax1Option)
                       
-            if alternateWithholdingTax1OptionMap is not None:
-                      record["ALTERNATE WITHHOLDING TAX-1:OPTION"]     = alternateWithholdingTax1OptionMap
-            else:
-                      record["ALTERNATE WITHHOLDING TAX-1:OPTION"]     = alternateWithholdingTax1Option
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#ALTERNATE WITHHOLDING TAX-1:OPTION #No mapped value for [{alternateWithholdingTax1Option}]")               
+        if alternateWithholdingTax1OptionMap is not None:
+            record["ALTERNATE WITHHOLDING TAX-1:OPTION"]     = alternateWithholdingTax1OptionMap
+        else:
+            record["ALTERNATE WITHHOLDING TAX-1:OPTION"]     = alternateWithholdingTax1Option
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#ALTERNATE WITHHOLDING TAX-1:OPTION #No mapped value for [{alternateWithholdingTax1Option}]")               
 
-            record["ALTERNATE FEDERAL TAX RATE (NN.NN)"]         = rowData[125-1:128]            
-            record["ALTERNATE PROVINCIAL TAX RATE (NN.NN)"]      = rowData[129-1:132]            
-            record["FILLER"]                                     = rowData[133-1:133]
+        record["ALTERNATE FEDERAL TAX RATE (NN.NN)"]         = rowData[125-1:128]            
+        record["ALTERNATE PROVINCIAL TAX RATE (NN.NN)"]      = rowData[129-1:132] 
+            
+        filler9                                              = rowData[133-1:133]
+        if filler9 == " " * 1:
+            record["FILLER 9"]              = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[132:133] (9)#Filler containing data [{filler9}]")            
 
 
     elif rowType == "103":
         # Row type: RRIF PAY INFO RECORD 3 (103)
-            rowType = "RRIF PAY INFO RECORD 3"
-            record["BRANCH"]                    = rowData[5-7]            
-            record["ACCOUNT"]                   = rowData[8-12]
+        rowType = "RRIF PAY INFO RECORD 3"
+        record["BRANCH"]                    = rowData[5-7]            
+        record["ACCOUNT"]                   = rowData[8-12]
 
-            #CD-20#
-            investmentVariety                   = rowData[16-1:16]                
-            investmentVarietyMap                = mapInvestmentVariety.get(investmentVariety)
+        #CD-20#
+        investmentVariety                   = rowData[16-1:16]                
+        investmentVarietyMap                = mapInvestmentVariety.get(investmentVariety)
               
-            if investmentVarietyMap is not None:
-                      record["INVESTMENT VARIETY"]     = investmentVarietyMap
-            else:
-                      record["INVESTMENT VARIETY"]     = investmentVariety
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#INVESTMENT VARIETY #No mapped value for [{investmentVariety}]")
+        if investmentVarietyMap is not None:
+            record["INVESTMENT VARIETY"]     = investmentVarietyMap
+        else:
+            record["INVESTMENT VARIETY"]     = investmentVariety
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#INVESTMENT VARIETY #No mapped value for [{investmentVariety}]")
 
-            record["FED TAX RATE (NN.NN)"]      = rowData[17-1:20]            
-            record["PROV TAX RATE (NN.NN)"]     = rowData[21-1:24]            
-            record["FLAT TAX AMOUNT"]           = rowData[25-1:29]            
-            record["BRANCH"]                    = rowData[30-32]            
-            record["ACCOUNT"]                   = rowData[33-37]            
-            record["TYPE"]                      = rowData[38-1:38]            
-            record["CHECK DIGIT"]               = rowData[39-1:39]
+        record["FED TAX RATE (NN.NN)"]      = rowData[17-1:20]            
+        record["PROV TAX RATE (NN.NN)"]     = rowData[21-1:24]            
+        record["FLAT TAX AMOUNT"]           = rowData[25-1:29]            
+        record["BRANCH"]                    = rowData[30-32]            
+        record["ACCOUNT"]                   = rowData[33-37]            
+        record["TYPE"]                      = rowData[38-1:38]            
+        record["CHECK DIGIT"]               = rowData[39-1:39]
   
-            #CD-21#
-            calcCode                            = rowData[40-1:40]        
-            calcCodeMap                         = mapCalcCode.get(calcCode)
+        #CD-21#
+        calcCode                            = rowData[40-1:40]        
+        calcCodeMap                         = mapCalcCode.get(calcCode)
               
-            if calcCodeMap is not None:
-                      record["CALC CODE"]       = calcCodeMap
-            else:
-                      record["CALC CODE"]       = calcCode
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#CALC CODE #No mapped value for [{calcCode}]")
+        if calcCodeMap is not None:
+            record["CALC CODE"]       = calcCodeMap
+        else:
+            record["CALC CODE"]       = calcCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#CALC CODE #No mapped value for [{calcCode}]")
                       
-            #CD-22#
-            futurePaymentCode                   = rowData[41-1:41]        
-            futurePaymentCodeMap                = mapFuturePaymentCode.get(futurePaymentCode)
+        #CD-22#
+        futurePaymentCode                   = rowData[41-1:41]        
+        futurePaymentCodeMap                = mapFuturePaymentCode.get(futurePaymentCode)
               
-            if futurePaymentCodeMap is not None:
-                      record["FUTURE PAYMENT CODE"]         = futurePaymentCodeMap
-            else:
-                      record["FUTURE PAYMENT CODE"]         = futurePaymentCode
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#FUTURE PAYMENT CODE #No mapped value for [{futurePaymentCode}]")
+        if futurePaymentCodeMap is not None:
+            record["FUTURE PAYMENT CODE"]         = futurePaymentCodeMap
+        else:
+            record["FUTURE PAYMENT CODE"]         = futurePaymentCode
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#FUTURE PAYMENT CODE #No mapped value for [{futurePaymentCode}]")
                       
                       
-            #CD-23#
-            thirdPartyInstruction               = rowData[42-1:42]        
-            thirdPartyInstructionMap            = mapThirdPartyInstruction.get(thirdPartyInstruction)
+        #CD-23#
+        thirdPartyInstruction               = rowData[42-1:42]        
+        thirdPartyInstructionMap            = mapThirdPartyInstruction.get(thirdPartyInstruction)
               
-            if thirdPartyInstructionMap is not None:
-                      record["THIRD PARTY INSTRUCTION"]     = thirdPartyInstructionMap
-            else:
-                      record["THIRD PARTY INSTRUCTION"]     = thirdPartyInstruction
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#THIRD PARTY INSTRUCTION #No mapped value for [{thirdPartyInstruction}]")
+        if thirdPartyInstructionMap is not None:
+            record["THIRD PARTY INSTRUCTION"]     = thirdPartyInstructionMap
+        else:
+            record["THIRD PARTY INSTRUCTION"]     = thirdPartyInstruction
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#THIRD PARTY INSTRUCTION #No mapped value for [{thirdPartyInstruction}]")
 
-            record["LAST PAYMENT DATE-1:CC"]    = rowData[43-1:44]            
-            record["LAST PAYMENT DATE-1:YY"]    = rowData[45-1:46]            
-            record["LAST PAYMENT DATE-1:MM"]    = rowData[47-1:48]            
-            record["LAST PAYMENT DATE-1:DD"]    = rowData[49-1:50]            
-            record["FILLER"]                    = rowData[51-1:133]
+        record["LAST PAYMENT DATE-1:CC"]    = rowData[43-1:44]            
+        record["LAST PAYMENT DATE-1:YY"]    = rowData[45-1:46]            
+        record["LAST PAYMENT DATE-1:MM"]    = rowData[47-1:48]            
+        record["LAST PAYMENT DATE-1:DD"]    = rowData[49-1:50] 
+            
+        filler9                             = rowData[51-1:133]
+        if filler9 == " " * 83:
+            record["FILLER 9"]              = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[50:133] (9)#Filler containing data [{filler9}]")            
 
             
     elif rowType == "711":
         # Row type: DECEASED RECORD 1 (711)
-            rowType = "DECEASED RECORD 1"
-            record["BRANCH"]                    = rowData[5-7]            
-            record["ACCOUNT"]                   = rowData[8-12]
+        rowType = "DECEASED RECORD 1"
+        record["BRANCH"]                    = rowData[5-7]            
+        record["ACCOUNT"]                   = rowData[8-12]
 
-            record["ORIGINATOR NAME-1:ADDRESS-1:LINE 1"] = rowData[16-1:45]            
-            record["ORIGINATOR NAME-1:ADDRESS-1:LINE 2"] = rowData[46-1:75]            
-            record["ORIGINATOR NAME-1:ADDRESS-1:LINE 3"] = rowData[76-1:105]            
-            record["FILLER"]                             = rowData[106-1:133]                    
+        record["ORIGINATOR NAME-1:ADDRESS-1:LINE 1"] = rowData[16-1:45]            
+        record["ORIGINATOR NAME-1:ADDRESS-1:LINE 2"] = rowData[46-1:75]            
+        record["ORIGINATOR NAME-1:ADDRESS-1:LINE 3"] = rowData[76-1:105]
+            
+        filler9                                      = rowData[106-1:133]
+        if filler9 == " " * 28:
+            record["FILLER 9"]                       = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[105:133] (9)#Filler containing data [{filler9}]")            
 
 
     elif rowType == "712":
         # Row type: DECEASED RECORD 2 (712)            
-            rowType = "DECEASED RECORD 2"
-            record["BRANCH"]                    = rowData[5-7]            
-            record["ACCOUNT"]                   = rowData[8-12]
+        rowType = "DECEASED RECORD 2"
+        record["BRANCH"]                    = rowData[5-7]            
+        record["ACCOUNT"]                   = rowData[8-12]
 
-            record["ORIGINATOR NAME-1:ADDRESS LINE 4"]     = rowData[16-1:45]            
-            record["ORIGINATOR NAME-1:ADDRESS LINE 5"]     = rowData[46-1:75]            
-            record["ORIGINATOR NAME-1:ADDRESS LINE 6"]     = rowData[76-1:105]            
-            record["SUCCESSOR OPEN DATE-1:CC"]             = rowData[106-1:107]            
-            record["SUCCESSOR OPEN DATE-1:YY"]             = rowData[108-1:109]            
-            record["SUCCESSOR OPEN DATE-1:MM"]             = rowData[110-1:111]            
-            record["SUCCESSOR OPEN DATE-1:DD"]             = rowData[112-1:113]            
-            record["SUCESSOR DATE OF DEATH-1:CC"]          = rowData[114-1:115]            
-            record["SUCESSOR DATE OF DEATH-1:YY"]          = rowData[116-1:117]            
-            record["SUCESSOR DATE OF DEATH-1:MM"]          = rowData[118-1:119]            
-            record["SUCESSOR DATE OF DEATH-1:DD"]          = rowData[120-1:121]            
-            record["FILLER"]                               = rowData[122-1:133]         
+        record["ORIGINATOR NAME-1:ADDRESS LINE 4"]     = rowData[16-1:45]            
+        record["ORIGINATOR NAME-1:ADDRESS LINE 5"]     = rowData[46-1:75]            
+        record["ORIGINATOR NAME-1:ADDRESS LINE 6"]     = rowData[76-1:105]            
+        record["SUCCESSOR OPEN DATE-1:CC"]             = rowData[106-1:107]            
+        record["SUCCESSOR OPEN DATE-1:YY"]             = rowData[108-1:109]            
+        record["SUCCESSOR OPEN DATE-1:MM"]             = rowData[110-1:111]            
+        record["SUCCESSOR OPEN DATE-1:DD"]             = rowData[112-1:113]            
+        record["SUCESSOR DATE OF DEATH-1:CC"]          = rowData[114-1:115]            
+        record["SUCESSOR DATE OF DEATH-1:YY"]          = rowData[116-1:117]            
+        record["SUCESSOR DATE OF DEATH-1:MM"]          = rowData[118-1:119]            
+        record["SUCESSOR DATE OF DEATH-1:DD"]          = rowData[120-1:121] 
+            
+        filler9                                        = rowData[122-1:133]
+        if filler9 == " " * 12:
+            record["FILLER 9"]                         = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[121:133] (9)#Filler containing data [{filler9}]")            
 
 
     elif rowType == "713":
         # Row type: RRIF BANK B PAY INFO RECORD (713)
-            rowType = "RRIF BANK B PAY INFO RECORD"
-            record["BRANCH"]                    = rowData[5-7]            
-            record["ACCOUNT"]                   = rowData[8-12]
+        rowType = "RRIF BANK B PAY INFO RECORD"
+        record["BRANCH"]                    = rowData[5-7]            
+        record["ACCOUNT"]                   = rowData[8-12]
               
-            #CD-24#
-            payFrequencyBankB                   = rowData[16-1:16]                        
-            payFrequencyBankBMap                = mapPayFrequencyBankB.get(payFrequencyBankB)
+        #CD-24#
+        payFrequencyBankB                   = rowData[16-1:16]                        
+        payFrequencyBankBMap                = mapPayFrequencyBankB.get(payFrequencyBankB)
               
-            if payFrequencyBankBMap is not None:
-                      record["PAY FREQUENCY (BANK B)"]     = payFrequencyBankBMap
-            else:
-                      record["PAY FREQUENCY (BANK B)"]     = payFrequencyBankB
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#PAY FREQUENCY (BANK B) #No mapped value for [{payFrequencyBankB}]")
+        if payFrequencyBankBMap is not None:
+            record["PAY FREQUENCY (BANK B)"]     = payFrequencyBankBMap
+        else:
+            record["PAY FREQUENCY (BANK B)"]     = payFrequencyBankB
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#PAY FREQUENCY (BANK B) #No mapped value for [{payFrequencyBankB}]")
               
-            #CD-25#
-            methodBankB                         = rowData[17-1:21]        
-            methodBankBMap                      = mapMethodBankB.get(methodBankB)
+        #CD-25#
+        methodBankB                         = rowData[17-1:21]        
+        methodBankBMap                      = mapMethodBankB.get(methodBankB)
               
-            if methodBankBMap is not None:
-                      record["METHOD (BANK B)"] = methodBankBMap
-            else:
-                      record["METHOD (BANK B)"] = methodBankB
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#PAY-FREQUENCY #No mapped value for [{methodBankB}]")
+        if methodBankBMap is not None:
+            record["METHOD (BANK B)"] = methodBankBMap
+        else:
+            record["METHOD (BANK B)"] = methodBankB
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#PAY-FREQUENCY #No mapped value for [{methodBankB}]")
 
-            record["AGENT (BANK B)"]                        = rowData[22-1:25]            
-            record["TRANSIT (BANK B)"]                      = rowData[26-1:30]            
-            record["CLIENT ACCOUNT (BANK B)"]               = rowData[31-1:45]            
-            record["FIRST PAYMENT DATE-CC (BANK B)"]        = rowData[46-1:47]            
-            record["FIRST PAYMENT DATE-YY (BANK B)"]        = rowData[48-1:49]            
-            record["FIRST PAYMENT DATE-MM (BANK B)"]        = rowData[50-1:51]            
-            record["FIRST PAYMENT DATE-DD (BANK B)"]        = rowData[52-1:53]            
-            record["FIRST PAYMENT AMOUNT (BANK B)"]         = rowData[54-1:62]            
-            record["ELECTED PAY AMOUNT (BANK B)"]           = rowData[63-1:71]        
+        record["AGENT (BANK B)"]                        = rowData[22-1:25]            
+        record["TRANSIT (BANK B)"]                      = rowData[26-1:30]            
+        record["CLIENT ACCOUNT (BANK B)"]               = rowData[31-1:45]            
+        record["FIRST PAYMENT DATE-CC (BANK B)"]        = rowData[46-1:47]            
+        record["FIRST PAYMENT DATE-YY (BANK B)"]        = rowData[48-1:49]            
+        record["FIRST PAYMENT DATE-MM (BANK B)"]        = rowData[50-1:51]            
+        record["FIRST PAYMENT DATE-DD (BANK B)"]        = rowData[52-1:53]            
+        record["FIRST PAYMENT AMOUNT (BANK B)"]         = rowData[54-1:62]            
+        record["ELECTED PAY AMOUNT (BANK B)"]           = rowData[63-1:71]        
 
-            #CD-26#
-            spousalBankA                        = rowData[72-1:72]                        
-            spousalBankAMap                     = mapSpousalBankA.get(spousalBankA)
+        #CD-26#
+        spousalBankA                        = rowData[72-1:72]                        
+        spousalBankAMap                     = mapSpousalBankA.get(spousalBankA)
               
-            if spousalBankAMap is not None:
-                      record["SPOUSAL (BANK A)"]     = spousalBankAMap
-            else:
-                      record["SPOUSAL (BANK A)"]     = spousalBankA
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#SPOUSAL (BANK A) #No mapped value for [{spousalBankA}]")
+        if spousalBankAMap is not None:
+            record["SPOUSAL (BANK A)"]     = spousalBankAMap
+        else:
+            record["SPOUSAL (BANK A)"]     = spousalBankA
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#SPOUSAL (BANK A) #No mapped value for [{spousalBankA}]")
               
-            #CD-27#
-            spousalBankB                        = rowData[73-1:73]                 
-            spousalBankBMap                     = mapSpousalBankB.get(spousalBankB)
+        #CD-27#
+        spousalBankB                        = rowData[73-1:73]                 
+        spousalBankBMap                     = mapSpousalBankB.get(spousalBankB)
               
-            if spousalBankBMap is not None:
-                      record["SPOUSAL (BANK B)"]     = spousalBankBMap
-            else:
-                      record["SPOUSAL (BANK B)"]     = spousalBankB
-                      rowStatus = -3
-                      exceptions.append(f"INVALID_MAP#SPOUSAL (BANK B) #No mapped value for [{spousalBankB}]")                         
+        if spousalBankBMap is not None:
+            record["SPOUSAL (BANK B)"]     = spousalBankBMap
+        else:
+            record["SPOUSAL (BANK B)"]     = spousalBankB
+            rowStatus = -3
+            exceptions.append(f"INVALID_MAP#SPOUSAL (BANK B) #No mapped value for [{spousalBankB}]")                         
 
-            record["DO NOT USE START DATE CC (BANK A)"] = rowData[74-1:75]            
-            record["DO NOT USE START DATE YY (BANK A)"] = rowData[76-1:77]            
-            record["DO NOT USE START DATE MM (BANK A)"] = rowData[78-1:79]            
-            record["DO NOT USE END DATE CC (BANK A)"]   = rowData[80-1:81]            
-            record["DO NOT USE END DATE YY (BANK A)"]   = rowData[82-1:83]            
-            record["DO NOT USE END DATE MM (BANK A)"]   = rowData[84-1:85]            
-            record["DO NOT USE START DATE CC (BANK B)"] = rowData[86-1:87]            
-            record["DO NOT USE START DATE YY (BANK B)"] = rowData[88-1:89]            
-            record["DO NOT USE START DATE MM (BANK B)"] = rowData[90-1:91]            
-            record["DO NOT USE END DATE CC (BANK B)"]   = rowData[92-1:93]            
-            record["DO NOT USE END DATE YY (BANK B)"]   = rowData[94-1:95]            
-            record["DO NOT USE END DATE MM (BANK B)"]   = rowData[96-1:97]            
-            record["FILLER"]                            = rowData[98-1:133]                         
+        record["DO NOT USE START DATE CC (BANK A)"] = rowData[74-1:75]            
+        record["DO NOT USE START DATE YY (BANK A)"] = rowData[76-1:77]            
+        record["DO NOT USE START DATE MM (BANK A)"] = rowData[78-1:79]            
+        record["DO NOT USE END DATE CC (BANK A)"]   = rowData[80-1:81]            
+        record["DO NOT USE END DATE YY (BANK A)"]   = rowData[82-1:83]            
+        record["DO NOT USE END DATE MM (BANK A)"]   = rowData[84-1:85]            
+        record["DO NOT USE START DATE CC (BANK B)"] = rowData[86-1:87]            
+        record["DO NOT USE START DATE YY (BANK B)"] = rowData[88-1:89]            
+        record["DO NOT USE START DATE MM (BANK B)"] = rowData[90-1:91]            
+        record["DO NOT USE END DATE CC (BANK B)"]   = rowData[92-1:93]            
+        record["DO NOT USE END DATE YY (BANK B)"]   = rowData[94-1:95]            
+        record["DO NOT USE END DATE MM (BANK B)"]   = rowData[96-1:97]
+        filler9                                     = rowData[98-1:133]
+        if filler9 == " " * 36:
+            record["FILLER 9"]                      = filler9
+        else:
+            rowStatus = -4
+            exceptions.append(f"INVALID_FILLER#FILLER@[97:133] (9)#Filler containing data [{filler9}]")            
                       
                       
     elif rowType == "999":
         # Row type: TRAILER (999)
-            rowType = "TRAILER"
-            record["BRANCH"]                    = rowData[5-7]            
-            record["ACCOUNT"]                   = rowData[8-12]
+        rowType = "TRAILER"
+        record["BRANCH"]                    = rowData[5-7]            
+        record["ACCOUNT"]                   = rowData[8-12]
 
-            record["TLR ID CNTR"]               = rowData[16-1:20]            
-            record["TLR COUNT"]                 = rowData[21-1:31]            
-            record["TRAILER P2 DATA"]           = rowData[32-1:133]                               
+        record["TLR ID CNTR"]               = rowData[16-1:20]            
+        record["TLR COUNT"]                 = rowData[21-1:31]            
+        record["TRAILER P2 DATA"]           = rowData[32-1:133]                               
 
                               
     else:
         # Bad structure of the record
-            rowType = "<Unrecognized>"
-            rowStatus = -2
-            exceptions.append(f"INVALID_STRUCTURE#ROW TYPE#Invalid row type")
+        rowType = "<Unrecognized>"
+        rowStatus = -2
+        exceptions.append(f"INVALID_STRUCTURE#ROW TYPE#Invalid row type")
 
             
     record["_ROW_TYPE"]                         = rowType
     record["_ROW_STATUS"]                       = rowStatus
     record["_ROW_EXCEPTIONS"]                   = exceptions
-    print ("NOK2")      
-    return record
-  
-print ("OK5")                              
-
-
-#---------------------------------------------------------------------------------------------------------------------
-# Define structure of each row in the DynamicFrame
-#---------------------------------------------------------------------------------------------------------------------
-import logging
-
-def log_errors(inner):
-    def wrapper(*args, **kwargs):
-        try:
-            return inner(*args, **kwargs)
-        except Exception as e:
-            logging.exception('Error in function: {}'.format(inner))
-            raise
-    return wrapper
-
-@log_errors
-def CreateSourceRowStructure(record):
-    
-    rowId      = record["_ROW_ID"]
-    rowData    = record["value"]
-    
-    rowStatus  = 0
-    exceptions = []
-
-    # Check row length
-    rowLength = len(rowData)
-    
-    if rowLength != 349:
-        
-        # Row has incorrect length != 349
-        rowStatus = -1
-        exceptions.append(f"INVALID_LENGHT#ROW#Invalid row length [{rowLength}]")
-        
-        record["_ROW_STATUS"]     = rowStatus
-        record["_ROW_EXCEPTIONS"] = exceptions
-
-        return record
-        
-    # Row has correct length = 349
-    
-    c16       = rowData[16-1]
-    c22       = rowData[22-1]
-    c23       = rowData[23-1]
-    c29       = rowData[29-1]
-
-    trid      = rowData[29-1]
-    spin      = rowData[30-1]
-    rowType   = trid + spin
-    
-    branchNumber        = rowData[4-1:6]
-    accountType         = rowData[15-1]
-    accountChekckDigit  = '~'
-    
-    if rowType == "11":
-
-        if c23 == " ":
-
-            # Customer Position Header
-            rowType = "Customer Position Header"
-            accountChekckDigit                                 = rowData[300-1]
-
-            record["CLIENT NUMBER"]                            = rowData[1-1:3]
-            record["BRANCH NUMBER"]                            = rowData[4-1:6]
-            record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
-            record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
-            
-            # Account Type lookup
-            accountType                                        = rowData[15-1]
-            accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
-            
-            if accountTypeXRef is not None:
-                record["ACCOUNT TYPE"]                         = accountTypeXRef
-                record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
-            else:
-                record["ACCOUNT TYPE"]                         = accountType
-                record["NEW ACCOUNT TYPE"]                     = ""
-                rowStatus = -3
-                exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-            record["SECURITY NUMBER"]                          = rowData[16-1:22]
-            
-            filler1                                            = rowData[23-1:28]
-            if filler1 == " " * 6:
-                record["FILLER 1"]                             = filler1
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
-            
-            record["TRID"]                                     = rowData[29-1]
-            record["SPIN"]                                     = rowData[30-1]
-            record["SECURITY DESCRIPTION LINE 1"]              = rowData[31-1:60]
-            record["DATE LAST ACTIVE"]                         = rowData[61-1:66]
-            record["MEMO FLAGS (0000)"]                        = rowData[67-1:70]
-            
-            # Exchange Code lookup
-            exchangeCode                                       = rowData[71-1]
-            exchangeCodeXRef                                   = xrefExchLookup.get(exchangeCode)
-            
-            if exchangeCodeXRef is not None:
-                record["EXCHANGE CODE"]                        = exchangeCodeXRef
-            else:
-                record["EXCHANGE CODE"]                        = exchangeCode
-                rowStatus = -3
-                exceptions.append(f"INVALID_XREF#EXCHANGE CODE#No lookup value for [{exchangeCode}]")
-            
-            record["SECURITY SPIN"]                            = rowData[72-1]
-            record["TRADE DATE QUANTITY SIGN"]                 = rowData[73-1]
-            record["TRADE DATE QUANTITY"]                      = rowData[74-1:90]
-            record["SETTLEMENT DATE QUANTITY SIGN"]            = rowData[91-1]
-            record["SETTLEMENT DATE QUANTITY"]                 = rowData[92-1:108]
-            record["MEMO FIELD 1 SIGN"]                        = rowData[109-1]
-            record["MEMO FIELD 1"]                             = rowData[110-1:126]
-            record["MEMO FIELD 2 SIGN"]                        = rowData[127-1]
-            record["MEMO FIELD 2"]                             = rowData[128-1:144]
-            record["MEMO FIELD 3 SIGN"]                        = rowData[145-1]
-            record["MEMO FIELD 3"]                             = rowData[146-1:162]
-            record["MEMO FIELD 4 SIGN"]                        = rowData[163-1]
-            record["MEMO FIELD 4"]                             = rowData[164-1:180]
-            record["SHORT VS BOX SIGN"]                        = rowData[181-1]
-            record["SHORT VS BOX"]                             = rowData[181-1:198]
-            record["NUMBER OF SHORT DAYS SIGN"]                = rowData[199-1]
-            record["NUMBER OF SHORT DAYS"]                     = rowData[200-1]
-            record["HOUSE REQUIREMENT % SIGN"]                 = rowData[201-1]
-            record["HOUSE REQUIREMENT %"]                      = rowData[202-1:204]
-            record["RECORD FLAGS"]                             = rowData[205-1:208]
-            record["MARKET PRICE"]                             = rowData[209-1:223]
-            record["IDA"]                                      = rowData[224-1:227]
-
-            # Security Class Code lookup
-            secClassCode                                       = rowData[228-1:234]
-            secClassCodeXRef                                   = xrefSecClassCodeLookup.get(secClassCode[1-1])
-            
-            if secClassCodeXRef is not None:
-                record["MSD CLASS CODE"]                       = secClassCodeXRef
-            else:
-                record["MSD CLASS CODE"]                       = secClassCode
-                rowStatus = -3
-                exceptions.append(f"INVALID_XREF#MSD CLASS CODE#No lookup value for [{secClassCode}]")
-
-            record["MARKET VALUE SIGN"]                        = rowData[235-1]
-            record["MARKET VALUE"]                             = rowData[235-1:252]
-            record["MATURITY DATE"]                            = rowData[253-1:258]
-            record["HOUSE REQUIREMENT AMOUNT SIGN"]            = rowData[259-1]
-            record["HOUSE REQUIREMENT AMOUNT"]                 = rowData[258-1:276]
-            record["S/D REQUIREMENT AMOUNT SIGN"]              = rowData[277-1]
-            record["S/D REQUIREMENT AMOUNT"]                   = rowData[278-1:294]
-            record["PREFERRED SEG SECURITY FLAG"]              = rowData[295-1:296]
-
-            # Account Range Indicator Mapping
-            accountRangeIncicator                              = rowData[297-1]
-            accountRangeIncicatorMap                           = mapTransSideIncicator.get(accountRangeIncicator)
-            
-            if accountRangeIncicatorMap is not None:
-                record["ACCOUNT RANGE INDICATOR"]              = accountRangeIncicatorMap
-            else:
-                record["ACCOUNT RANGE INDICATOR"]              = accountRangeIncicator
-                rowStatus = -3
-                exceptions.append(f"INVALID_MAP#ACCOUNT RANGE INDICATOR#No mapped value for [{accountRangeIncicator}]")
-
-            filler8                                            = rowData[298-1:299]
-            if filler8 == " " * 2:
-                record["FILLER 8"]                             = filler8
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[298:299] (8)#Filler containing data [{filler8}]")
-            
-            record["ACCOUNT CHECK DIGIT"]                      = rowData[300-1]
-
-            filler9                                            = rowData[301-1:349]
-            if filler9 == " " * 49:
-                record["FILLER 9"]                             = filler9
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[301:349] (9)#Filler containing data [{filler9}]")
-            
-        elif c22 != " ":
-            
-            # Option Header
-            rowType = "Option Header"
-            accountChekckDigit                                 = rowData[289-1]
-
-            record["CLIENT NUMBER"]                            = rowData[1-1:3]
-            record["BRANCH NUMBER"]                            = rowData[4-1:6]
-            record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
-            record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
-            
-            # Account Type lookup
-            accountType                                        = rowData[15-1]
-            accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
-            
-            if accountTypeXRef is not None:
-                record["ACCOUNT TYPE"]                         = accountTypeXRef
-                record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
-            else:
-                record["ACCOUNT TYPE"]                         = accountType
-                record["NEW ACCOUNT TYPE"]                     = ""
-                rowStatus = -3
-                exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-            record["UNDERLYING SECURITY NUMBER"]               = rowData[16-1:21]
-            record["OPTION BYTE"]                              = rowData[22-1]
-
-            filler1                                            = rowData[23-1:28]
-            if filler1 == " " * 6:
-                record["FILLER 1"]                             = filler1
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
-
-            record["TRID"]                                     = rowData[29-1]
-            record["SPIN"]                                     = rowData[30-1]
-            record["SECURITY DESCRIPTION"]                     = rowData[31-1:60]
-
-            filler2                                            = rowData[61-1:66]
-            if filler2 == " " * 6:
-                record["FILLER 2"]                             = filler2
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[61:66] (2)#Filler containing data [{filler2}]")
-
-            record["OPTION SECURITY NUMBER"]                   = rowData[67-1:72]
-            
-            # Expiry Indicator Mapping
-            expiryIndicator                                    = rowData[67-1:68]
-            expiryIndicatorMap                                 = "T "
-            
-            if expiryIndicator == "X ":
-                record["EXPIRATION CODE"]                      = expiryIndicatorMap
-            else:
-                record["EXPIRATION CODE"]                      = expiryIndicator
-                rowStatus = -3
-                exceptions.append(f"INVALID_MAP#EXPIRATION CODE#No mapped value for [{expiryIndicator}]")
-
-            # Option Code Mapping
-            optionCode                                         = rowData[69-1:70]
-            optionCodeMap                                      = mapOptionCode.get(optionCode)
-            
-            if optionCodeMap is not None:
-                record["OPTION CODE"]                          = optionCodeMap
-            else:
-                record["OPTION CODE"]                          = optionCode
-                rowStatus = -3
-                exceptions.append(f"INVALID_MAP#OPTION CODE#No mapped value for [{optionCode}]")
-
-            # Exchange Code lookup
-            exchangeCode                                       = rowData[71-1]
-            exchangeCodeXRef                                   = xrefExchLookup.get(exchangeCode)
-            
-            if exchangeCodeXRef is not None:
-                record["EXCHANGE CODE"]                        = exchangeCodeXRef
-            else:
-                record["EXCHANGE CODE"]                        = exchangeCode
-                rowStatus = -3
-                exceptions.append(f"INVALID_XREF#EXCHANGE CODE#No lookup value for [{exchangeCode}]")
-
-            # Legacy Special Information Mapping
-            securitySpin                                       = rowData[72-1]
-            securitySpinMap                                    = "O"
-            
-            if securitySpin == "M":
-                record["SECURITY SPIN"]                        = securitySpinMap
-            else:
-                record["SECURITY SPIN"]                        = securitySpin
-                rowStatus = -3
-                exceptions.append(f"INVALID_MAP#SECURITY SPIN#No mapped value for [{securitySpin}]")
-
-            record["LONG QUANTITY SIGN"]                       = rowData[73-1]
-            record["LONG QUANTITY"]                            = rowData[74-1:90]
-            record["SHORT QUANTITY SIGN"]                      = rowData[91-1]
-            record["SHORT QUANTITY"]                           = rowData[92-1:106]
-            record["STRIKE PRICE"]                             = rowData[210-1:223]
-            record["IDA"]                                      = rowData[224-1:227]
-
-            # Security Class Code lookup
-            secClassCode                                       = rowData[228-1:234]
-            secClassCodeXRef                                   = xrefSecClassCodeLookup.get(secClassCode[1-1])
-            
-            if secClassCodeXRef is not None:
-                record["MSD CLASS CODE"]                       = secClassCodeXRef
-            else:
-                record["MSD CLASS CODE"]                       = secClassCode
-                rowStatus = -3
-                exceptions.append(f"INVALID_XREF#MSD CLASS CODE#No lookup value for [{secClassCode}]")
-
-            filler7                                            = rowData[235-1:252]
-            if filler7 == " " * 18:
-                record["FILLER 7"]                             = filler7
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[235:252] (7)#Filler containing data [{filler7}]")
-
-            record["EXPIRATION DATE"]                          = rowData[253-1:258]
-
-            filler8                                            = rowData[259-1:297]
-            if filler8 == " " * 39:
-                record["FILLER 8"]                             = filler8
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[259:297] (8)#Filler containing data [{filler8}]")
-
-            record["LAST DIGIT OF UNDERLYING SECURITY NUMBER"] = rowData[297-1]
-            record["ACCOUNT CHECK DIGIT"]                      = rowData[298-1]
-
-            filler9                                            = rowData[299-1:349]
-            if filler9 == " " * 39:
-                record["FILLER 9"]                             = filler9
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[259:297] (9)#Filler containing data [{filler9}]")
-            
-        else:
-            # Bad structure of the record
-            rowStatus = -2
-            exceptions.append(f"INVALID_STRUCTURE#ROW TYPE[TRID={trid},SPIN={spin},@[22]={c22}]#Invalid row type")
-        
-    elif rowType == "12":
-
-        # Customer Position Trailer
-        rowType = "Customer Position Trailer"
-        accountChekckDigit                                 = rowData[86-1]
-
-        record["CLIENT NUMBER"]                            = rowData[1-1:3]
-        record["BRANCH NUMBER"]                            = rowData[4-1:6]
-        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
-        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
-            
-        # Account Type lookup
-        accountType                                        = rowData[15-1]
-        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
-
-        if accountTypeXRef is not None:
-            record["ACCOUNT TYPE"]                         = accountTypeXRef
-            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
-        else:
-            record["ACCOUNT TYPE"]                         = accountType
-            record["NEW ACCOUNT TYPE"]                     = ""
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-        record["SECURITY NUMBER"]                          = rowData[16-1:22]
-
-        filler1                                            = rowData[23-1:28]
-        if filler1 == " " * 6:
-            record["FILLER 1"]                             = filler1
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
-
-        record["TRID"]                                     = rowData[29-1]
-        record["SPIN"]                                     = rowData[30-1]
-        record["SECURITY DESCRIPTION LINE 2"]              = rowData[31-1:60]
-        record["MATURITY OR EXPIRATION DATE"]              = rowData[61-1:69]
-        record["BOND INTEREST RATE"]                       = rowData[69-1:79]
-        record["FREQUENCY CODE"]                           = rowData[80-1]
-        record["CALL CODE"]                                = rowData[81-1]
-        record["DATED DATE"]                               = rowData[82-1:85]
-        record["ACCOUNT CHECK DIGIT"]                      = rowData[86-1]
-
-        filler9                                            = rowData[87-1:349]
-        if filler9 == " " * 263:
-            record["FILLER 9"]                             = filler9
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[259:297] (9)#Filler containing data [{filler9}]")
-
-    elif rowType == "22":
-
-        # When-Issue Customer Trailer
-        rowType = "When-Issue Customer Trailer"
-        accountChekckDigit                                 = rowData[86-1]
-
-        record["CLIENT NUMBER"]                            = rowData[1-1:3]
-        record["BRANCH NUMBER"]                            = rowData[4-1:6]
-        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
-        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
-
-        # Account Type lookup
-        accountType                                        = rowData[15-1]
-        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
-
-        if accountTypeXRef is not None:
-            record["ACCOUNT TYPE"]                         = accountTypeXRef
-            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
-        else:
-            record["ACCOUNT TYPE"]                         = accountType
-            record["NEW ACCOUNT TYPE"]                     = ""
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-        record["SECURITY NUMBER"]                          = rowData[16-1:22]
-
-        filler1                                            = rowData[23-1:28]
-        if filler1 == " " * 6:
-            record["FILLER 1"]                             = filler1
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
-
-        record["TRID"]                                     = rowData[29-1]
-        record["SPIN "]                                    = rowData[30-1]
-        record["SECURITY DESC"]                            = rowData[31-1:60]
-        record["MATURITY OR EXPIRATION DATE"]              = rowData[61-1:69]
-        record["BOND INTEREST RATE"]                       = rowData[69-1:79]
-        record["FREQUENCY CODE"]                           = rowData[80-1]
-        record["CALL CODE"]                                = rowData[81-1]
-        record["DATED DATE"]                               = rowData[82-1:85]
-        record["ACCOUNT CHECK DIGIT"]                      = rowData[86-1]
-        record["FILLER 9"]                                 = rowData[87-1:349]
-        
-        filler9                                            = rowData[87-1:349]
-        if filler9 == " " * 263:
-            record["FILLER 9"]                             = filler9
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[87:349] (9)#Filler containing data [{filler9}]")
-
-    elif rowType == "21":
-
-        # When-Issue Customer Header
-        rowType = "When-Issue Customer Header"
-        accountChekckDigit                                 = rowData[267-1]
-
-        record["CLIENT NUMBER"]                            = rowData[1-1:3]
-        record["BRANCH NUMBER"]                            = rowData[4-1:6]
-        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
-        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
-
-        # Account Type lookup
-        accountType                                        = rowData[15-1]
-        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
-
-        if accountTypeXRef is not None:
-            record["ACCOUNT TYPE"]                         = accountTypeXRef
-            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
-        else:
-            record["ACCOUNT TYPE"]                         = accountType
-            record["NEW ACCOUNT TYPE"]                     = ""
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-        record["SECURITY NUMBER"]                          = rowData[16-1:22]
-
-        filler1                                            = rowData[23-1:28]
-        if filler1 == " " * 6:
-            record["FILLER 1"]                             = filler1
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
-
-        record["TRID"]                                     = rowData[29-1]
-        record["SPIN"]                                     = rowData[30-1]
-        record["SECURITY DESC"]                            = rowData[31-1:60]
-        record["DATE LAST ACTIVE"]                         = rowData[61-1:66]
-
-        filler2                                            = rowData[61-1:68]
-        if filler2 == " " * 8:
-            record["FILLER 2"]                             = filler2
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[61:68] (2)#Filler containing data [{filler2}]")
-
-        # Exchange Code lookup
-        exchangeCode                                       = rowData[69-1]
-        exchangeCodeXRef                                   = xrefExchLookup.get(exchangeCode)
-
-        if exchangeCodeXRef is not None:
-            record["EXCHANGE CODE"]                        = exchangeCodeXRef
-        else:
-            record["EXCHANGE CODE"]                        = exchangeCode
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#EXCHANGE CODE#No lookup value for [{exchangeCode}]")
-
-        record["SECURITY SPIN"]                            = rowData[70-1]
-        record["QUANTITY SIGN"]                            = rowData[71-1]
-        record["QUANTITY"]                                 = rowData[72-1:88]
-        record["CONTRACT PRICE (INTEGER)"]                 = rowData[89-1:96]
-        record["CONTRACT PRICE (FRACTION)"]                = rowData[97-1:104]
-        record["CONTRACT VALUE SIGN"]                      = rowData[105-1]
-        record["CONTRACT VALUE"]                           = rowData[106-1:122]
-        record["MARKET VALUE SIGN"]                        = rowData[123-1]
-        record["MARKET VALUE"]                             = rowData[124-1:140]
-
-        filler7                                            = rowData[141-1:142]
-        if filler7 == " " * 2:
-            record["FILLER 7"]                             = filler7
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[141:142] (7)#Filler containing data [{filler7}]")
-
-        record["RECORD FLAGS"]                             = rowData[143-1:144]
-        record["MARKET PRICE"]                             = rowData[145-1:161]
-        record["FILLER 8"]                                 = rowData[162-1:266]
-
-        filler8                                            = rowData[162-1:266]
-        if filler8 == " " * 105:
-            record["FILLER 8"]                             = filler8
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[162:266] (8)#Filler containing data [{filler8}]")
-
-        record["ACCOUNT CHECK DIGIT"]                      = rowData[267-1]
-
-        filler9                                            = rowData[268-1:349]
-        if filler9 == " " * 82:
-            record["FILLER 9"]                             = filler9
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[268:349] (9)#Filler containing data [{filler9}]")
-
-
-    elif rowType == "2A":
-
-        # When-Issue Trading Header
-        rowType = "When-Issue Trading Header"
-        accountChekckDigit                                 = rowData[267-1]
-
-        record["CLIENT NUMBER"]                            = rowData[1-1:3]
-        record["BRANCH NUMBER"]                            = rowData[4-1:6]
-        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
-        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
-
-        # Account Type lookup
-        accountType                                        = rowData[15-1]
-        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
-
-        if accountTypeXRef is not None:
-            record["ACCOUNT TYPE"]                         = accountTypeXRef
-            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
-        else:
-            record["ACCOUNT TYPE"]                         = accountType
-            record["NEW ACCOUNT TYPE"]                     = ""
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-        record["SECURITY NUMBER"]                          = rowData[16-1:22]
-
-        filler1                                            = rowData[23-1:28]
-        if filler1 == " " * 6:
-            record["FILLER 1"]                             = filler1
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
-
-        record["TRID"]                                     = rowData[29-1]
-        record["SPIN"]                                     = rowData[30-1]
-        record["SECURITY DESCRIPTION"]                     = rowData[31-1:60]
-        record["DATE LAST ACTIVE"]                         = rowData[61-1:66]
-
-        filler2                                            = rowData[61-1:68]
-        if filler2 == " " * 8:
-            record["FILLER 2"]                             = filler2
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[61:68] (2)#Filler containing data [{filler2}]")
-
-        # Exchange Code lookup
-        exchangeCode                                       = rowData[69-1]
-        exchangeCodeXRef                                   = xrefExchLookup.get(exchangeCode)
-
-        if exchangeCodeXRef is not None:
-            record["EXCHANGE CODE"]                        = exchangeCodeXRef
-        else:
-            record["EXCHANGE CODE"]                        = exchangeCode
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#EXCHANGE CODE#No lookup value for [{exchangeCode}]")
-
-        record["SECURITY SPIN"]                            = rowData[70-1]
-        record["QUANTITY SIGN"]                            = rowData[71-1]
-        record["QUANTITY"]                                 = rowData[72-1:88]
-        record["CONTRACT PRICE (INTEGER)"]                 = rowData[89-1:96]
-        record["CONTRACT PRICE (FRACTION)"]                = rowData[97-1:104]
-        record["CONTRACT VALUE SIGN"]                      = rowData[105-1]
-        record["CONTRACT VALUE"]                           = rowData[106-1:122]
-        record["MARKET VALUE SIGN"]                        = rowData[123-1]
-        record["MARKET VALUE"]                             = rowData[124-1:140]
-
-        filler7                                            = rowData[141-1:142]
-        if filler7 == " " * 2:
-            record["FILLER 7"]                             = filler7
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[141:142] (7)#Filler containing data [{filler7}]")
-
-        record["RECORD FLAGS"]                             = rowData[143-1:144]
-        record["MARKET PRICE"]                             = rowData[145-1:161]
-
-        filler8                                            = rowData[162-1:266]
-        if filler8 == " " * 105:
-            record["FILLER 8"]                             = filler8
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[162:266] (8)#Filler containing data [{filler8}]")
-
-        record["ACCOUNT CHECK DIGIT"]                      = rowData[267-1]
-
-        filler9                                            = rowData[268-1:349]
-        if filler9 == " " * 82:
-            record["FILLER 9"]                             = filler9
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[268:349] (9)#Filler containing data [{filler9}]")
-
-    elif rowType == "1A":
-
-        # Trading Analysis Trade Date
-        rowType = "Trading Analysis Trade Date"
-        accountChekckDigit                                 = rowData[349-1]
-
-        record["CLIENT NUMBER"]                            = rowData[1-1:3]
-        record["BRANCH NUMBER"]                            = rowData[4-1:6]
-        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
-        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
-
-        # Account Type lookup
-        accountType                                        = rowData[15-1]
-        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
-
-        if accountTypeXRef is not None:
-            record["ACCOUNT TYPE"]                         = accountTypeXRef
-            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
-        else:
-            record["ACCOUNT TYPE"]                         = accountType
-            record["NEW ACCOUNT TYPE"]                     = ""
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-        record["SECURITY NUMBER"]                          = rowData[16-1:22]
-
-        filler1                                            = rowData[23-1:28]
-        if filler1 == " " * 6:
-            record["FILLER 1"]                             = filler1
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
-
-        record["TRID"]                                     = rowData[29-1]
-        record["SPIN"]                                     = rowData[30-1]
-        record["SECURITY DESCRIPTION"]                     = rowData[31-1:60]
-        record["BOOK DLA"]                                 = rowData[61-1:66]
-        record["MARGIN DLA"]                               = rowData[67-1:72]
-
-        filler2                                            = rowData[73-1:76]
-        if filler2 == " " * 4:
-            record["FILLER 2"]                             = filler2
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[73:76] (2)#Filler containing data [{filler2}]")
-
-        # Exchange Code lookup
-        exchangeCode                                       = rowData[71-1]
-        exchangeCodeXRef                                   = xrefExchLookup.get(exchangeCode)
-
-        if exchangeCodeXRef is not None:
-            record["EXCHANGE CODE"]                        = exchangeCodeXRef
-        else:
-            record["EXCHANGE CODE"]                        = exchangeCode
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#EXCHANGE CODE#No lookup value for [{exchangeCode}]")
-
-        record["SECURITY SPIN"]                            = rowData[78-1]
-        record["T/D QUANTITY"]                             = rowData[79-1:95]
-        record["T/D QUANTITY SIGN"]                        = rowData[96-1]
-        record["T/D COST"]                                 = rowData[97-1:113]
-        record["T/D COST SIGN"]                            = rowData[114-1]
-        record["T/D UNREALIZED P/L"]                       = rowData[115-1:131]
-        record["T/D UNREALIZED P/L SIGN"]                  = rowData[132-1]
-        record["BOND FREQUENCY CODE"]                      = rowData[133-1:134]
-        record["DATE LAST CALCULATED"]                     = rowData[135-1:140]
-        record["HAIRCUT %"]                                = rowData[141-1:143]
-        record["HAIRCUT % SIGN"]                           = rowData[144-1]
-        record["CONCESSION"]                               = rowData[145-1:159]
-        record["CONCESSION SIGN"]                          = rowData[160-1]
-        record["HOUSE PRICE"]                              = rowData[161-1:175]
-        record["HOUSE PRICE SIGN"]                         = rowData[176-1]
-        record["T/D REALIZED P/L"]                         = rowData[177-1:193]
-        record["T/D REALIZED P/L SIGN"]                    = rowData[194-1]
-        record["FILLER 8"]                                 = rowData[195-1:202]
-
-        filler8                                            = rowData[195-1:202]
-        if filler8 == " " * 8:
-            record["FILLER 8"]                             = filler8
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[195:202] (8)#Filler containing data [{filler8}]")
-
-        record["RECORD FLAGS"]                             = rowData[203-1:206]
-        record["MARKET PRICE"]                             = rowData[207-1:221]
-        record["IDA SIGN"]                                 = rowData[222-1]
-        record["IDA"]                                      = rowData[223-1:226]
-
-        # Security Class Code lookup
-        secClassCode                                       = rowData[228-1:234]
-        secClassCodeXRef                                   = xrefSecClassCodeLookup.get(secClassCode[1-1])
-
-        if secClassCodeXRef is not None:
-            record["MSD CLASS CODE"]                       = secClassCodeXRef
-        else:
-            record["MSD CLASS CODE"]                       = secClassCode
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#MSD CLASS CODE#No lookup value for [{secClassCode}]")
-
-        filler9                                            = rowData[234-1:348]
-        if filler9 == " " * 115:
-            record["FILLER 9"]                             = filler9
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[234:348] (9)#Filler containing data [{filler9}]")
-
-        record["ACCOUNT CHECK DIGIT"]                      = rowData[349-1]
-        
-    elif rowType == "1B":
-
-        # Trading Analysis Settlement Date
-        rowType = "Trading Analysis Settlement Date"
-        accountChekckDigit                                 = rowData[267-1]
-
-        record["CLIENT NUMBER"]                            = rowData[1-1:3]
-        record["BRANCH NUMBER"]                            = rowData[4-1:6]
-        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
-        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
-
-        # Account Type lookup
-        accountType                                        = rowData[15-1]
-        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
-
-        if accountTypeXRef is not None:
-            record["ACCOUNT TYPE"]                         = accountTypeXRef
-            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
-        else:
-            record["ACCOUNT TYPE"]                         = accountType
-            record["NEW ACCOUNT TYPE"]                     = ""
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-        record["SECURITY NUMBER"]                          = rowData[16-1:22]
-
-        filler1                                            = rowData[23-1:28]
-        if filler1 == " " * 6:
-            record["FILLER 1"]                             = filler1
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
-
-        record["TRID"]                                     = rowData[29-1]
-        record["SPIN"]                                     = rowData[30-1]
-        record["SECURITY DESCRIPTION"]                     = rowData[31-1:60]
-        record["OPTION EXPIRATION DATE"]                   = rowData[61-1:66]
-
-        filler2                                            = rowData[67-1:69]
-        if filler2 == " " * 3:
-            record["FILLER 2"]                             = filler2
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[67:69] (2)#Filler containing data [{filler2}]")
-
-        record["INTEREST FREQUENCY"]                       = rowData[70-1]
-        record["S/D QUANTITY"]                             = rowData[71-1:87]
-        record["S/D QUANTITY SIGN"]                        = rowData[88-1]
-        record["S/D COST"]                                 = rowData[89-1:105]
-        record["S/D COST SIGN"]                            = rowData[106-1]
-        record["MEMO INTEREST CHARGE"]                     = rowData[107-1:117]
-        record["MEMO INTEREST CHARGE SIGN"]                = rowData[118-1]
-        record["DIVIDEND/INTEREST"]                        = rowData[119-1:129]
-        record["DIVIDEND/INTEREST SIGN"]                   = rowData[130-1]
-        record["GROSS CREDIT"]                             = rowData[131-1:141]
-        record["GROSS CREDIT SIGN"]                        = rowData[142-1]
-        record["EARNED INTEREST"]                          = rowData[143-1:153]
-        record["EARNED INTEREST SIGN"]                     = rowData[154-1]
-        record["INTEREST RATE"]                            = rowData[155-1:165]
-        record["INTEREST RATE SIGN"]                       = rowData[166-1]
-        record["S/D REALIZED P/L"]                         = rowData[167-1:183]
-        record["S/D REALIZED P/L SIGN"]                    = rowData[184-1]
-
-        filler7                                            = rowData[185-1:203]
-        if filler7 == " " * 19:
-            record["FILLER 7"]                             = filler7
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[185:203] (7)#Filler containing data [{filler7}]")
-
-        record["IDA"]                                      = rowData[204-1:207]
-
-        filler8                                            = rowData[208-1:266]
-        if filler8 == " " * 59:
-            record["FILLER 8"]                             = filler8
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[208:266] (8)#Filler containing data [{filler8}]")
-
-        record["ACCOUNT CHECK DIGIT"]                      = rowData[267-1]
-
-        filler9                                            = rowData[268-1:349]
-        if filler9 == " " * 82:
-            record["FILLER 9"]                             = filler9
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[268:349] (9)#Filler containing data [{filler9}]")
-
-    elif rowType == "2B":
-
-        # When-Issue Trading Trailer
-        rowType = "When-Issue Trading Trailer"
-        accountChekckDigit                                 = rowData[267-1]
-
-        record["CLIENT NUMBER"]                            = rowData[1-1:3]
-        record["BRANCH NUMBER"]                            = rowData[4-1:6]
-        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
-        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
-
-        # Account Type lookup
-        accountType                                        = rowData[15-1]
-        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
-
-        if accountTypeXRef is not None:
-            record["ACCOUNT TYPE"]                         = accountTypeXRef
-            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
-        else:
-            record["ACCOUNT TYPE"]                         = accountType
-            record["NEW ACCOUNT TYPE"]                     = ""
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-        record["SECURITY NUMBER"]                          = rowData[16-1:22]
-
-        filler1                                            = rowData[23-1:28]
-        if filler1 == " " * 6:
-            record["FILLER 1"]                             = filler1
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
-
-        record["TRID"]                                     = rowData[29-1]
-        record["SPIN"]                                     = rowData[30-1]
-        record["SECURITY DESCRIPTION"]                     = rowData[31-1:60]
-        record["OPTION EXPIRATION DATE"]                   = rowData[61-1:66]
-
-        filler2                                            = rowData[67-1:69]
-        if filler2 == " " * 3:
-            record["FILLER 2"]                             = filler2
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[67:69] (2)#Filler containing data [{filler2}]")
-
-        record["INTEREST FREQUENCY"]                       = rowData[70-1]
-        record["INTEREST FREQUENCY SIGN"]                  = rowData[71-1]
-        record["S/D QUANTITY"]                             = rowData[72-1:88]
-        record["S/D QUANTITY SIGN"]                        = rowData[89-1]
-        record["S/D COST"]                                 = rowData[90-1:106]
-        record["S/D COST SIGN"]                            = rowData[107-1]
-        record["MEMO INTEREST CHARGE"]                     = rowData[108-1:116]
-        record["MEMO INTEREST CHARGE SIGN"]                = rowData[117-1]
-        record["DIVIDEND/INTEREST"]                        = rowData[118-1:126]
-        record["DIVIDEND/INTEREST SIGN"]                   = rowData[127-1]
-        record["GROSS CREDIT"]                             = rowData[128-1:136]
-        record["GROSS CREDIT SIGN"]                        = rowData[137-1]
-        record["EARNED INTEREST"]                          = rowData[138-1:146]
-        record["EARNED INTEREST SIGN"]                     = rowData[147-1]
-        record["INTEREST RATE"]                            = rowData[148-1:159]
-        record["INTEREST RATE SIGN"]                       = rowData[160-1]
-        record["S/D REALIZED P/L"]                         = rowData[161-1:175]
-        record["S/D REALIZED P/L SIGN"]                    = rowData[176-1]
-
-        filler7                                            = rowData[177-1:203]
-        if filler7 == " " * 27:
-            record["FILLER 7"]                             = filler7
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[177:203] (7)#Filler containing data [{filler7}]")
-
-        record["IDA"]                                      = rowData[204-1]
-
-        filler8                                            = rowData[208-1:266]
-        if filler8 == " " * 59:
-            record["FILLER 8"]                             = filler8
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[208:266] (8)#Filler containing data [{filler8}]")
-
-        record["ACCOUNT CHECK DIGIT"]                      = rowData[267-1]
-
-        filler9                                            = rowData[268-1:349]
-        if filler9 == " " * 82:
-            record["FILLER 9"]                             = filler9
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[268:349] (9)#Filler containing data [{filler9}]")
-
-    elif rowType == "7 ":
-
-        if c16 != " ":
-
-            # Customer Balance, F/Type
-            rowType = "Customer Balance, F/Type"
-            accountChekckDigit                                 = rowData[349-1]
-
-            record["CLIENT NUMBER"]                            = rowData[1-1:3]
-            record["BRANCH NUMBER"]                            = rowData[4-1:6]
-            record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
-            record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
-
-            # Account Type lookup
-            accountType                                        = rowData[15-1]
-            accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
-
-            if accountTypeXRef is not None:
-                record["ACCOUNT TYPE"]                         = accountTypeXRef
-                record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
-            else:
-                record["ACCOUNT TYPE"]                         = accountType
-                record["NEW ACCOUNT TYPE"]                     = ""
-                rowStatus = -3
-                exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-            record["HIGH−VALUE"]                               = rowData[16-1]
-            record["DATE LAST ACTIVE (BKPG / MRGN)"]           = rowData[17-1:22]
-
-            filler1                                            = rowData[23-1:28]
-            if filler1 == " " * 6:
-                record["FILLER 1"]                             = filler1
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[23:28] (1)#Filler containing data [{filler1}]")
-
-            record["TRID"]                                     = rowData[29-1]
-            record["SPIN"]                                     = rowData[30-1]
-            record["CUSTOMER SHORT NAME"]                      = rowData[31-1:50]
-            record["CUSTOMER INSTRUCTIONS"]                    = rowData[51-1:52]
-            record["ACCOUNT CODE"]                             = rowData[53-1:55]
-            record["RR CODE"]                                  = rowData[56-1:58]
-
-            filler2                                            = rowData[59-1]
-            if filler2 == " " * 1:
-                record["FILLER 2"]                             = filler2
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[59] (2)#Filler containing data [{filler2}]")
-
-            record["S/D BALANCE SIGN"]                         = rowData[60-1]
-            record["S/D BALANCE"]                              = rowData[61-1:77]
-            record["T/D BALANCE/MARKET VALUE SIGN"]            = rowData[78-1]
-            record["T/D BALANCE/MARKET VALUE"]                 = rowData[79-1:95]
-            record["OUTSTANDING CALL / DAY−2 CALL SIGN"]       = rowData[96-1]
-            record["OUTSTANDING CALL / DAY−2 CALL"]            = rowData[97-1:113]
-            record["SMA CALL/DAY−3 CALL SIGN"]                 = rowData[114-1]
-            record["SMA CALL/DAY−3 CALL"]                      = rowData[115-1:131]
-            record["BUYING POWER/DAY−5 CALL SIGN"]             = rowData[132-1]
-            record["BUYING POWER/DAY−5 CALL"]                  = rowData[133-1:149]
-            record["MARGIN/CASH DEFICIENCY SIGN"]              = rowData[150-1]
-            record["MARGIN/CASH DEFICIENCY"]                   = rowData[151-1:167]
-            record["MARGIN INTEREST ACCUMULATION SIGN"]        = rowData[168-1]
-            record["MARGIN INTEREST ACCUMULATION"]             = rowData[169-1:185]
-            record["HOUSE EXCESS SIGN"]                        = rowData[186-1]
-            record["HOUSE EXCESS"]                             = rowData[187-1:203]
-            record["ISIP INDEX COST SIGN"]                     = rowData[204-1]
-            record["ISIP INDEX COST"]                          = rowData[225-1:221]
-            record["TBD SIGN"]                                 = rowData[222-1]
-            record["TBD"]                                      = rowData[223-1:240]
-
-            filler9                                            = rowData[241-1:348]
-            if filler9 == " " * 108:
-                record["FILLER 9"]                             = filler9
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[241:348] (9)#Filler containing data [{filler9}]")
-
-            record["ACCOUNT CHECK DIGIT"]                      = rowData[349-1]
-            
-        else:
-
-            # Loan Account
-            rowType = "Loan Account"
-            accountChekckDigit                                 = '~'
-
-            record["CLIENT NUMBER"]                            = rowData[1-1:3]
-            record["BRANCH NUMBER"]                            = rowData[4-1:6]
-            record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
-            record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
-
-            # Account Type lookup
-            accountType                                        = rowData[15-1]
-            accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
-
-            if accountTypeXRef is not None:
-                record["ACCOUNT TYPE"]                         = accountTypeXRef
-                record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
-            else:
-                record["ACCOUNT TYPE"]                         = accountType
-                record["NEW ACCOUNT TYPE"]                     = ""
-                rowStatus = -3
-                exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-            filler1                                            = rowData[16-1]
-            if filler1 == " " * 1:
-                record["FILLER 1"]                             = filler1
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[16] (1)#Filler containing data [{filler1}]")
-            
-            record["DATE LAST ACTIVE (BKPG / MRGN)"]           = rowData[17-1:28]
-            record["TRID"]                                     = rowData[29-1]
-            record["SPIN"]                                     = rowData[30-1]
-            record["ACCOUNT NAME"]                             = rowData[31-1:50]
-            record["ACCOUNT CODES"]                            = rowData[51-1:53]
-
-            filler2                                            = rowData[54-1:59]
-            if filler2 == " " * 6:
-                record["FILLER 2"]                             = filler2
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[54:59] (2)#Filler containing data [{filler2}]")
-
-            record["S/D BALANCE SIGN"]                         = rowData[60-1]
-            record["S/D BALANCE"]                              = rowData[61-1:77]
-            record["MARKET VALUE OF SECURITIES SIGN"]          = rowData[78-1]
-            record["MARKET VALUE OF SECURITIES"]               = rowData[79-1:95]
-            record["RATIO MV−TO−S/D BALANCE SIGN"]             = rowData[96-1]
-            record["RATIO MV−TO−S/D BALANCE"]                  = rowData[97-1:113]
-
-            filler9                                            = rowData[114-1:349]
-            if filler9 == " " * 236:
-                record["FILLER 9"]                             = filler9
-            else:
-                rowStatus = -4
-                exceptions.append(f"INVALID_FILLER#FILLER@[114:349] (9)#Filler containing data [{filler9}]")
-
-    elif rowType == "71":
-
-        # Customer Balance, Last in Account
-        rowType = "Customer Balance, Last in Account"
-        accountChekckDigit                                 = rowData[349-1]
-
-        record["CLIENT NUMBER"]                            = rowData[1-1:3]
-        record["BRANCH NUMBER"]                            = rowData[4-1:6]
-        record["ACCOUNT NUMBER"]                           = rowData[7-1:11]
-        record["FOREIGN CURRENCY CODE"]                    = rowData[12-1:14]
-
-        # Account Type lookup
-        accountType                                        = rowData[15-1]
-        accountTypeXRef                                    = xrefAccTypeLookup.get(accountType)
-
-        if accountTypeXRef is not None:
-            record["ACCOUNT TYPE"]                         = accountTypeXRef
-            record["NEW ACCOUNT TYPE"]                     = branchNumber + accountTypeXRef + accountChekckDigit
-        else:
-            record["ACCOUNT TYPE"]                         = accountType
-            record["NEW ACCOUNT TYPE"]                     = ""
-            rowStatus = -3
-            exceptions.append(f"INVALID_XREF#ACCOUNT TYPE#No lookup value for [{accountType}]")
-
-        record["HIGH−VALUE (BPS Internal use only)"]       = rowData[16-1]
-        record["DATE LAST ACTIVE"]                         = rowData[17-1:22]
-        record["DATE"]                                     = rowData[23-1:28]
-        record["TRID"]                                     = rowData[29-1]
-        record["SPIN"]                                     = rowData[30-1]
-        record["CUSTOMER SHORT NAME"]                      = rowData[31-1:50]
-        record["CUSTOMER INSTRUCTIONS"]                    = rowData[51-1:52]
-        record["ACCOUNT CODE"]                             = rowData[53-1:55]
-        record["RR CODE"]                                  = rowData[56-1:58]
-
-        filler2                                            = rowData[59-1]
-        if filler2 == " " * 1:
-            record["FILLER 2"]                             = filler2
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[59] (2)#Filler containing data [{filler2}]")
-
-        record["S/D BALANCE SIGN"]                         = rowData[60-1]
-        record["S/D BALANCE"]                              = rowData[61-1:77]
-        record["T/D BALANCE/MARKET VALUE SIGN"]            = rowData[78-1]
-        record["T/D BALANCE/MARKET VALUE"]                 = rowData[79-1:95]
-        record["TODAYS CALL/DAY−1 CALL SIGN"]              = rowData[96-1]
-        record["TODAYS CALL/DAY−1 CALL"]                   = rowData[97-1:113]
-        record["OUTSTANDING CALL / DAY−2 CALL SIGN"]       = rowData[114-1]
-        record["OUTSTANDING CALL / DAY−2 CALL"]            = rowData[115-1:131]
-        record["SMA CALL/DAY−3 CALL SIGN"]                 = rowData[132-1]
-        record["SMA CALL/DAY−3 CALL"]                      = rowData[133-1:149]
-        record["HOUSE CALL/DAY−4 CALL SIGN"]               = rowData[150-1]
-        record["HOUSE CALL/DAY−4 CALL"]                    = rowData[151-1:167]
-        record["BUYING POWER/DAY−5 CALL SIGN"]             = rowData[168-1]
-        record["BUYING POWER/DAY−5 CALL"]                  = rowData[169-1:185]
-        record["CASH AVAILABLE OR EQUITY PERCENT SIGN"]    = rowData[186-1]
-        record["CASH AVAILABLE OR EQUITY PERCENT"]         = rowData[187-1:203]
-        record["MARGIN/CASH DEFICIENCY SIGN"]              = rowData[204-1]
-        record["MARGIN/CASH DEFICIENCY"]                   = rowData[203-1:221]
-        record["TYPE 5 BALANCE IN TYPE 2 A/C SIGN"]        = rowData[222-1]
-        record["TYPE 5 BALANCE IN TYPE 2 A/C"]             = rowData[223-1:239]
-
-        filler7                                            = rowData[240-1:249]
-        if filler7 == " " * 10:
-            record["FILLER 7"]                             = filler7
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[240:249] (7)#Filler containing data [{filler7}]")
-
-        record["MARGIN INTEREST ACCUMULATION SIGN"]        = rowData[250-1]
-        record["MARGIN INTEREST ACCUMULATION"]             = rowData[251-1:261]
-        record["HOUSE EXCESS SIGN"]                        = rowData[262-1]
-        record["HOUSE EXCESS"]                             = rowData[262-1:279]
-        record["ISIP INDEX COST SIGN"]                     = rowData[280-1]
-        record["ISIP INDEX COST"]                          = rowData[281-1:297]
-        record["FILLER 8"]                                 = rowData[297-1:303]
-
-        filler8                                            = rowData[297-1:303]
-        if filler8 == " " * 7:
-            record["FILLER 8"]                             = filler8
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[297:303] (8)#Filler containing data [{filler8}]")
-
-        record["LANGUAGE"]                                 = rowData[304-1]
-
-        filler9                                            = rowData[305-1:320]
-        if filler9 == " " * 16:
-            record["FILLER 9"]                             = filler9
-        else:
-            rowStatus = -4
-            exceptions.append(f"INVALID_FILLER#FILLER@[305:320] (9)#Filler containing data [{filler9}]")
-
-        # Account Range Indicator Mapping
-        accountRangeIncicator                              = rowData[297-1]
-        accountRangeIncicatorMap                           = mapTransSideIncicator.get(accountRangeIncicator)
-
-        if accountRangeIncicatorMap is not None:
-            record["ACCOUNT RANGE INDICATOR"]              = accountRangeIncicatorMap
-        else:
-            record["ACCOUNT RANGE INDICATOR"]              = accountRangeIncicator
-            rowStatus = -3
-
-        record["TELEPHONE NUMBER"]                         = rowData[322-1:330]
-        record["ISIP NET P/S SIGN"]                        = rowData[331-1]
-        record["ISIP NET P/S"]                             = rowData[332-1:348]
-        record["ACCOUNT CHECK DIGIT"]                      = rowData[349-1]
-
-    elif rowType == "91":
-    
-        # Client Totals Header
-        rowType = "Client Totals Header"
-
-    elif rowType == "92":
-    
-        # Client Totals Trailer
-        rowType = "Client Totals Trailer"
-
-    elif rowType == "00":
-    
-        # Date Record
-        rowType = "Date Record"
-
-    else:
-        # Bad structure of the record
-        rowType = "<Unrecognized>"
-        rowStatus = -2
-        exceptions.append(f"INVALID_STRUCTURE#ROW TYPE[TRID={trid},SPIN={spin}]#Invalid row type")
-
-    record["_ROW_TYPE"]                                    = rowType
-    record["_ROW_STATUS"]                                  = rowStatus
-    record["_ROW_EXCEPTIONS"]                              = exceptions
-    
+    print ("OK2")      
     return record
 
 #---------------------------------------------------------------------------------------------------------------------
@@ -2153,6 +1098,7 @@ if mapStructErrCount > 0:
 print(mapStructErrCount)
 #errors_source_dyf = mapped_source_dyf.errorsAsDynamicFrame()
 #errors_source_dyf.show()
+mapped_source_dyf.show()
 #---------------------------------------------------------------------------------------------------------------------
 # Split DynamicFrame to the default and the rejected outputs
 #---------------------------------------------------------------------------------------------------------------------
@@ -2191,630 +1137,517 @@ transformed_dyf   = SelectFromCollection.apply(dfc=conditionalRouter, key="outpu
 # Rows rejected -> rejected_dyf
 rejected_dyf = SelectFromCollection.apply(dfc=conditionalRouter, key="output_rejected", transformation_ctx="output_rejected")
 
-#---------------------------------------------------------------------------------------------------------------------
-# Form each output row
-#---------------------------------------------------------------------------------------------------------------------
+transformed_dyf.count()
 @log_errors
 def CreateOutputRowStructure(record):
 
     rowData   = record["value"]
     rowType   = record["_ROW_TYPE"]
+    print("Output")
     
-    if rowType == "Customer Position Header":
+    if rowType == "HEADER":
 
-        # Customer Position Header 
-        # Fields:     48 in/49 out
-        # Transforms: 5
-
-        record["_ROW_DATA"] = "|".join([
-            record["CLIENT NUMBER"],
-            record["BRANCH NUMBER"],
-            record["ACCOUNT NUMBER"],
-            record["FOREIGN CURRENCY CODE"],
-            record["ACCOUNT TYPE"],
-            record["NEW ACCOUNT TYPE"],
-
-            record["SECURITY NUMBER"],
-            record["FILLER 1"],
-            record["TRID"],
-            record["SPIN"],
-            record["SECURITY DESCRIPTION LINE 1"],
-            record["DATE LAST ACTIVE"],
-            record["MEMO FLAGS (0000)"],
-            record["EXCHANGE CODE"],
-            record["SECURITY SPIN"],
-            record["TRADE DATE QUANTITY SIGN"],
-            record["TRADE DATE QUANTITY"],
-            record["SETTLEMENT DATE QUANTITY SIGN"],
-            record["SETTLEMENT DATE QUANTITY"],
-            record["MEMO FIELD 1 SIGN"],
-            record["MEMO FIELD 1"],
-            record["MEMO FIELD 2 SIGN"],
-            record["MEMO FIELD 2"],
-            record["MEMO FIELD 3 SIGN"],
-            record["MEMO FIELD 3"],
-            record["MEMO FIELD 4 SIGN"],
-            record["MEMO FIELD 4"],
-            record["SHORT VS BOX SIGN"],
-            record["SHORT VS BOX"],
-            record["NUMBER OF SHORT DAYS SIGN"],
-            record["NUMBER OF SHORT DAYS"],
-            record["HOUSE REQUIREMENT % SIGN"],
-            record["HOUSE REQUIREMENT %"],
-            record["RECORD FLAGS"],
-            record["MARKET PRICE"],
-            record["IDA"],
-            record["MSD CLASS CODE"],
-            record["MARKET VALUE SIGN"],
-            record["MARKET VALUE"],
-            record["MATURITY DATE"],
-            record["HOUSE REQUIREMENT AMOUNT SIGN"],
-            record["HOUSE REQUIREMENT AMOUNT"],
-            record["S/D REQUIREMENT AMOUNT SIGN"],
-            record["S/D REQUIREMENT AMOUNT"],
-            record["PREFERRED SEG SECURITY FLAG"],
-            record["ACCOUNT RANGE INDICATOR"],
-            record["FILLER 8"],
-            record["ACCOUNT CHECK DIGIT"],
-            record["FILLER 9"]
-        ])
-
-    elif rowType == "Option Header":
-
-        # Option Header
-        # Fields:     30 in/31 out
-        # Transforms: 7
+        # HEADER (000) 
+        # Fields:     x in/y out
+        # Transforms: z
+        print ("O00") 
 
         record["_ROW_DATA"] = "|".join([
-            record["CLIENT NUMBER"],
-            record["BRANCH NUMBER"],
-            record["ACCOUNT NUMBER"],
-            record["FOREIGN CURRENCY CODE"],
-            record["ACCOUNT TYPE"],
-            record["NEW ACCOUNT TYPE"],
-
-            record["UNDERLYING SECURITY NUMBER"],
-            record["OPTION BYTE"],
-            record["FILLER 1"],
-            record["TRID"],
-            record["SPIN"],
-            record["SECURITY DESCRIPTION"],
-            record["FILLER 2"],
-            record["OPTION SECURITY NUMBER"],
-            record["EXPIRATION CODE"],
-            record["OPTION CODE"],
-            record["EXCHANGE CODE"],
-            record["SECURITY SPIN"],
-            record["LONG QUANTITY SIGN"],
-            record["LONG QUANTITY"],
-            record["SHORT QUANTITY SIGN"],
-            record["SHORT QUANTITY"],
-            record["STRIKE PRICE"],
-            record["IDA"],
-            record["MSD CLASS CODE"],
-            record["FILLER 7"],
-            record["EXPIRATION DATE"],
-            record["FILLER 8"],
-            record["LAST DIGIT OF UNDERLYING SECURITY NUMBER"],
-            record["ACCOUNT CHECK DIGIT"],
-            record["FILLER 9"]
-        ])
-
-    elif rowType == "Customer Position Trailer":
-
-        # Customer Position Trailer
-        # Fields:     17 in/18 out
-        # Transforms: 2
-
-        record["_ROW_DATA"] = "|".join([
-            record["CLIENT NUMBER"],
-            record["BRANCH NUMBER"],
-            record["ACCOUNT NUMBER"],
-            record["FOREIGN CURRENCY CODE"],
-            record["ACCOUNT TYPE"],
-            record["NEW ACCOUNT TYPE"],
+            record["CARRIAGE CONTROL"],
+            record["CLIENT−NUMBER"],
+            record["ACCOUNT−NUMBER (BBBAAAAA)"],
+            record["TRID (= 00)"],
+            record["RECORD-1:ID (=1)"],
             
-            record["SECURITY NUMBER"],
-            record["FILLER 1"],
-            record["TRID"],
-            record["SPIN"],
-            record["SECURITY DESCRIPTION LINE 2"],
-            record["MATURITY OR EXPIRATION DATE"],
-            record["BOND INTEREST RATE"],
-            record["FREQUENCY CODE"],
-            record["CALL CODE"],
-            record["DATED DATE"],
-            record["ACCOUNT CHECK DIGIT"],
-            record["FILLER 9"]
+            record["HEADER ID DATE="],
+            record["HEADER DATE-1:MM"],
+            record["HEADER DATE-1:DD"],
+            record["HEADER DATE-1:YY"],
+            record["HEADER P2 DATA"]
         ])
 
-    elif rowType == "When-Issue Customer Trailer":
+    elif rowType == "REGISTERED PLAN RECORD":
 
-        # When-Issue Customer Trailer
-        # Fields:     17 in/18 out
-        # Transforms: 2
+        # REGISTERED PLAN RECORD (001)
+        # Fields:     x in/y out
+        # Transforms: z
+        print ("O01")
 
         record["_ROW_DATA"] = "|".join([
-            record["CLIENT NUMBER"],
-            record["BRANCH NUMBER"],
-            record["ACCOUNT NUMBER"],
-            record["FOREIGN CURRENCY CODE"],
-            record["ACCOUNT TYPE"],
-            record["NEW ACCOUNT TYPE"],
-            
-            record["SECURITY NUMBER"],
+            record["CARRIAGE CONTROL"],
+            record["CLIENT−NUMBER"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["TRID (= 00)"],
+            record["RECORD-1:ID (=1)"], 
+            record["ACCOUNT-TYPE (SHOULD ALWAYS = 1)"],
+            record["ACCOUNT−CHECK−DIGIT"],
+            record["LITERATURE−CODE"],
+            record["PLAN−TYPE"],
+            record["ACCOUNT−STATUS"],            
+            record["RRIF−SUCCESSOR−CODE"],
+            record["RSP−APPLICATION−CODE"],
+            record["RSP−TYPE (FUTURE USE)"],
+            record["TAX−GEO−CODE"],
+            record["LOCK−IN−PLAN−CODE"],
+            record["LOCK−IN−PLAN−DATE−CC"],
+            record["LOCK−IN−PLAN−DATE−YY"],
+            record["LOCK−IN−PLAN−DATE−MM"],
+            record["LOCK−IN−PLAN−DATE−DD"],
+            record["’YT’ = YUKON"],
+            record["CLOSE−REASON − CLIENT DEFINED"],
+            record["FEE−PAID−CODE"],
             record["FILLER 1"],
-            record["TRID"],
-            record["SPIN "],
-            record["SECURITY DESC"],
-            record["MATURITY OR EXPIRATION DATE"],
-            record["BOND INTEREST RATE"],
-            record["FREQUENCY CODE"],
-            record["CALL CODE"],
-            record["DATED DATE"],
-            record["ACCOUNT CHECK DIGIT"],
+            record["FEE−TYPE"],
+            record["SPOUSAL−NAME"],
+            record["SPOUSAL−SIN"],
+            record["SPOUSAL−EVER"],
+            record["SPOUSAL−BIRTHDATE−CC"],
+            record["SPOUSAL−BIRTHDATE−YY"],
+            record["SPOUSAL−BIRTHDATE−MM"],
+            record["SPOUSAL−BIRTHDATE−DD"],
+            record["SPOUSAL−ANNUITY"],
+            record["BENEFICIARY−1−NAME"],
+            record["BENEFICIARY−1−SIN"],
             record["FILLER 9"]
         ])
 
-    elif rowType == "When-Issue Customer Header":
+    elif rowType == "PRINCIPAL RECORD 2":
 
-        # When-Issue Customer Header
-        # Fields:     28 in/29 out
-        # Transforms: 3
+        # PRINCIPAL RECORD 2 (002)
+        # Fields:     x in/y out
+        # Transforms: z
+        print ("O02")
 
         record["_ROW_DATA"] = "|".join([
-            record["CLIENT NUMBER"],
-            record["BRANCH NUMBER"],
-            record["ACCOUNT NUMBER"],
-            record["FOREIGN CURRENCY CODE"],
-            record["ACCOUNT TYPE"],
-            record["NEW ACCOUNT TYPE"],
+            record["CARRIAGE CONTROL"],
+            record["CLIENT−NUMBER"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["TRID (= 00)"],
+            record["RECORD-1:ID (=1)"],
             
-            record["SECURITY NUMBER"],
-            record["FILLER 1"],
-            record["TRID"],
-            record["SPIN"],
-            record["SECURITY DESC"],
-            record["DATE LAST ACTIVE"],
-            record["FILLER 2"],
-            record["EXCHANGE CODE"],
-            record["SECURITY SPIN"],
-            record["QUANTITY SIGN"],
-            record["QUANTITY"],
-            record["CONTRACT PRICE (INTEGER)"],
-            record["CONTRACT PRICE (FRACTION)"],
-            record["CONTRACT VALUE SIGN"],
-            record["CONTRACT VALUE"],
-            record["MARKET VALUE SIGN"],
-            record["MARKET VALUE"],
-            record["FILLER 7"],
-            record["RECORD FLAGS"],
-            record["MARKET PRICE"],
-            record["FILLER 8"],
-            record["ACCOUNT CHECK DIGIT"],
+            record["BENEFICIARY−1−RELATION"],
+            record["BENEFICIARY−1−MISC"],
+            record["BENEFICIARY−2−NAME"],
+            record["BENEFICIARY−2−SIN−1"],
+            record["BENEFICIARY−2−RELATION"],
+            record["BENEFICIARY−2−MISC"],
+            record["PREVIOUS−GEO−CODE"],
+            record["GEO-DATE-CC"],
+            record["GEO-DATE-YY"],
+            record["GEO-DATE-MM"],
+            record["GEO-DATE-DD"],
+            record["OPEN−DATE−CC"],
+            record["OPEN−DATE−YY"],
+            record["OPEN−DATE−MM"],
+            record["OPEN−DATE−DD"],
+            record["CLOSE−DATE−CC"],
+            record["CLOSE−DATE−YY"],
+            record["CLOSE−DATE−MM"],
+            record["CLOSE−DATE−DD"],
+            record["CHANGE−DATE−CC"],
+            record["CHANGE−DATE−YY"],
+            record["CHANGE−DATE−MM"],
+            record["CHANGE−DATE−DD"],
+            record["REGISTRATION−CODE"],
+            record["SIBLING−NUMBER"],
             record["FILLER 9"]
-        ])
+        ])        
+
+    elif rowType == "PRINCIPAL RECORD 3":
+
+        # PRINCIPAL RECORD 3 (003)
+        # Fields:     x in/y out
+        # Transforms: z
+        print ("O03")
+
+        record["_ROW_DATA"] = "|".join([
+            record["CARRIAGE CONTROL"],
+            record["CLIENT−NUMBER"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["TRID (= 00)"],
+            record["RECORD-1:ID (=1)"],
+            
+            record["GROUP−NO"],
+            record["FILLER 9"]
+        ])            
+
+    elif rowType == "RRIF PAY INFO RECORD 1":
+
+        # RRIF PAY INFO RECORD 1 (101) 
+        # Fields:     x in/y out
+        # Transforms: z
+        print ("101")
+
+        record["_ROW_DATA"] = "|".join([
+            record["CARRIAGE CONTROL"],
+            record["CLIENT−NUMBER"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["TRID (= 00)"],
+            record["RECORD-1:ID (=1)"],
+            
+            record["RIF-YE-VALUE"],
+            record["RR1-TERM"],
+            record["FILLER1"],
+            record["PAY-FREQUENCY"],
+            record["PAY-METHOD"],
+            record["RR-AGENT"],
+            record["RR-BANK-TRANSIT"],
+            record["RR-BANK-ACCOUNT"],
+            record["FILLER2"],
+            record["GROSS-NET-IND"],
+            record["WITHHOLD-TAX"],
+            record["FIRST PAYMENT-1:CC"],
+            record["FIRST PAYMENT-1:YY"],
+            record["FIRST PAYMENT-1:MM"],
+            record["FIRST PAYMENT-1:DD"],
+            record["FIRST PAYMENT-1:AMOUNT"],
+            record["ELECTED PAY-1:AMOUNT"],
+            record["MINIMUM PAY-1:AMOUNT"],
+            record["ALTERNATE DATE-1:CC"],
+            record["ALTERNATE DATE-1:YY"],
+            record["ALTERNATE DATE-1:MM"],
+            record["ALTERNATE DATE-1:DD"],
+            record["ALTERNATE GROSS/NET INDICATOR"],
+            record["SPOUSAL CONTRIBUTION CODE"],
+            record["MAX PAY AMOUNT"],
+            record["ALTERNATE PAY EVER-1:EVERY JAN"],
+            record["ALTERNATE PAY EVER-1:EVERY FEB"],
+            record["ALTERNATE PAY EVER-1:EVERY MAR"],
+            record["ALTERNATE PAY EVER-1:EVERY APR"],
+            record["ALTERNATE PAY EVER-1:EVERY MAY"],
+            record["ALTERNATE PAY EVER-1:EVERY JUN"],
+            record["ALTERNATE PAY EVER-1:EVERY JUL"],
+            record["ALTERNATE PAY EVER-1:EVERY AUG"],
+            record["ALTERNATE PAY EVER-1:EVERY SEP"],
+            record["ALTERNATE PAY EVER-1:EVERY OCT"],
+            record["ALTERNATE PAY EVER-1:EVERY NOV"],
+            record["ALTERNATE PAY EVER-1:EVERY DEC"],
+            record["FILLER 9"]
+        ])            
+
+    elif rowType == "RRIF PAY INFO RECORD 2":
+
+        # RRIF PAY INFO RECORD 2 (102)
+        # Fields:     x in/y out
+        # Transforms: z
+        print ("102")
+
+        record["_ROW_DATA"] = "|".join([
+            record["CARRIAGE CONTROL"],
+            record["CLIENT−NUMBER"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["TRID (= 00)"],
+            record["RECORD-1:ID (=1)"],
+            
+            record["JAN PAY-1:AMOUNT"],
+            record["FEB PAY-1:AMOUNT"],
+            record["MAR PAY-1:AMOUNT"],
+            record["APR PAY-1:AMOUNT"],
+            record["MAY PAY-1:AMOUNT"],
+            record["JUN PAY-1:AMOUNT"],
+            record["JUL PAY-1:AMOUNT"],
+            record["AUG PAY-1:AMOUNT"],
+            record["SEP PAY-1:AMOUNT"],
+            record["OCT PAY-1:AMOUNT"],
+            record["NOV PAY-1:AMOUNT"],
+            record["DEC PAY-1:AMOUNT"],
+            record["ALTERNATE WITHHOLDING TAX-1:OPTION"],
+            record["ALTERNATE FEDERAL TAX RATE (NN.NN)"],
+            record["ALTERNATE PROVINCIAL TAX RATE (NN.NN)"],
+            record["FILLER 9"]
+        ])            
+
+    elif rowType == "RRIF PAY INFO RECORD 3":
+
+        # Row type: RRIF PAY INFO RECORD 3 (103) 
+        # Fields:     x in/y out
+        # Transforms: z
+        print ("103")
+
+        record["_ROW_DATA"] = "|".join([
+            record["CARRIAGE CONTROL"],
+            record["CLIENT−NUMBER"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["TRID (= 00)"],
+            record["RECORD-1:ID (=1)"],
+            
+            record["INVESTMENT VARIETY"],
+            record["FED TAX RATE (NN.NN)"],
+            record["PROV TAX RATE (NN.NN)"],
+            record["FLAT TAX AMOUNT"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["TYPE"],
+            record["CHECK DIGIT"],
+            record["FUTURE PAYMENT CODE"],
+            record["THIRD PARTY INSTRUCTION"],
+            record["LAST PAYMENT DATE-1:CC"],
+            record["LAST PAYMENT DATE-1:YY"],
+            record["LAST PAYMENT DATE-1:MM"],
+            record["LAST PAYMENT DATE-1:DD"],
+            record["FILLER 9"]
+        ])            
+
+    elif rowType == "DECEASED RECORD 1":
+
+        # DECEASED RECORD 1 (711) 
+        # Fields:     x in/y out
+        # Transforms: z
+        print ("711")
+
+        record["_ROW_DATA"] = "|".join([
+            record["CARRIAGE CONTROL"],
+            record["CLIENT−NUMBER"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["TRID (= 00)"],
+            record["RECORD-1:ID (=1)"],
+            record["ORIGINATOR NAME-1:ADDRESS-1:LINE 1"],
+            record["ORIGINATOR NAME-1:ADDRESS-1:LINE 2"],
+            record["ORIGINATOR NAME-1:ADDRESS-1:LINE 3"],
+            record["FILLER 9"]
+        ])            
+
+    elif rowType == "DECEASED RECORD 2":
+
+        # DECEASED RECORD 2 (712) 
+        # Fields:     x in/y out
+        # Transforms: z
+        print ("712")
+
+        record["_ROW_DATA"] = "|".join([
+            record["CARRIAGE CONTROL"],
+            record["CLIENT−NUMBER"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["TRID (= 00)"],
+            record["RECORD-1:ID (=1)"],
+            
+            record["ORIGINATOR NAME-1:ADDRESS LINE 4"],
+            record["ORIGINATOR NAME-1:ADDRESS LINE 5"],
+            record["ORIGINATOR NAME-1:ADDRESS LINE 6"],
+            record["SUCCESSOR OPEN DATE-1:CC"],
+            record["SUCCESSOR OPEN DATE-1:YY"],
+            record["SUCCESSOR OPEN DATE-1:MM"],
+            record["SUCCESSOR OPEN DATE-1:DD"],
+            record["SUCESSOR DATE OF DEATH-1:CC"],
+            record["SUCESSOR DATE OF DEATH-1:YY"],
+            record["SUCESSOR DATE OF DEATH-1:MM"],
+            record["SUCESSOR DATE OF DEATH-1:DD"],
+            record["FILLER 9"]
+        ])            
+
+    elif rowType == "RRIF BANK B PAY INFO RECORD":
+
+        # RRIF BANK B PAY INFO RECORD (713) 
+        # Fields:     x in/y out
+        # Transforms: z
+        print ("713")
+
+        record["_ROW_DATA"] = "|".join([
+            record["CARRIAGE CONTROL"],
+            record["CLIENT−NUMBER"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["TRID (= 00)"],
+            record["RECORD-1:ID (=1)"],
+            
+            record["PAY FREQUENCY (BANK B)"],
+            record["METHOD (BANK B)"],
+            record["AGENT (BANK B)"],
+            record["TRANSIT (BANK B)"],
+            record["CLIENT ACCOUNT (BANK B)"],
+            record["FIRST PAYMENT DATE-CC (BANK B)"],
+            record["FIRST PAYMENT DATE-YY (BANK B)"],
+            record["FIRST PAYMENT DATE-MM (BANK B)"],
+            record["FIRST PAYMENT DATE-DD (BANK B)"],
+            record["FIRST PAYMENT AMOUNT (BANK B)"],
+            record["ELECTED PAY AMOUNT (BANK B)"],
+            record["SPOUSAL (BANK A)"],
+            record["SPOUSAL (BANK B)"],
+            record["DO NOT USE START DATE CC (BANK A)"],
+            record["DO NOT USE START DATE YY (BANK A)"],
+            record["DO NOT USE START DATE MM (BANK A)"],
+            record["DO NOT USE END DATE CC (BANK A)"],
+            record["DO NOT USE END DATE YY (BANK A)"],
+            record["DO NOT USE END DATE MM (BANK A)"],
+            record["DO NOT USE START DATE CC (BANK B)"],
+            record["DO NOT USE START DATE YY (BANK B)"],
+            record["DO NOT USE START DATE MM (BANK B)"],
+            record["DO NOT USE END DATE CC (BANK B)"],
+            record["DO NOT USE END DATE YY (BANK B)"],
+            record["DO NOT USE END DATE MM (BANK B)"],
+            record["FILLER 9"]
+        ])            
+
+    elif rowType == "TRAILER":
+
+        # TRAILER (999) 
+        # Fields:     x in/y out
+        # Transforms: z
+        print ("999")
+
+        record["_ROW_DATA"] = "|".join([
+            record["CARRIAGE CONTROL"],
+            record["CLIENT−NUMBER"],
+            record["BRANCH"],
+            record["ACCOUNT"],
+            record["TRID (= 00)"],
+            record["RECORD-1:ID (=1)"],
+            
+            record["TLR ID CNTR"],
+            record["TLR COUNT"],
+            record["TRAILER P2 DATA"]
+        ])            
         
-    elif rowType == "When-Issue Trading Header":
-
-        # When-Issue Trading Header
-        # Fields:     18 in/19 out
-        # Transforms: 3
-
-        record["_ROW_DATA"] = "|".join([
-            record["CLIENT NUMBER"],
-            record["BRANCH NUMBER"],
-            record["ACCOUNT NUMBER"],
-            record["FOREIGN CURRENCY CODE"],
-            record["ACCOUNT TYPE"],
-            record["NEW ACCOUNT TYPE"],
-            record["SECURITY NUMBER"],
-            
-            record["FILLER 1"],
-            record["TRID"],
-            record["SPIN"],
-            record["SECURITY DESCRIPTION"],
-            record["DATE LAST ACTIVE"],
-            record["FILLER 2"],
-            record["EXCHANGE CODE"],
-            record["SECURITY SPIN"],
-            record["QUANTITY SIGN"],
-            record["QUANTITY"],
-            record["CONTRACT PRICE (INTEGER)"],
-            record["CONTRACT PRICE (FRACTION)"],
-            record["CONTRACT VALUE SIGN"],
-            record["CONTRACT VALUE"],
-            record["MARKET VALUE SIGN"],
-            record["MARKET VALUE"],
-            record["FILLER 7"],
-            record["RECORD FLAGS"],
-            record["MARKET PRICE"],
-            record["FILLER 8"],
-            record["ACCOUNT CHECK DIGIT"],
-            record["FILLER 9"]
-        ])
-        
-    elif rowType == "Trading Analysis Trade Date":
-
-        # Trading Analysis Trade Date
-        # Fields:     39 in/40 out
-        # Transforms: 4
-
-        record["_ROW_DATA"] = "|".join([
-            record["CLIENT NUMBER"],
-            record["BRANCH NUMBER"],
-            record["ACCOUNT NUMBER"],
-            record["FOREIGN CURRENCY CODE"],
-            record["ACCOUNT TYPE"],
-            record["NEW ACCOUNT TYPE"],
-            
-            record["SECURITY NUMBER"],
-            record["FILLER 1"],
-            record["TRID"],
-            record["SPIN"],
-            record["SECURITY DESCRIPTION"],
-            record["BOOK DLA"],
-            record["MARGIN DLA"],
-            record["FILLER 2"],
-            record["EXCHANGE CODE"],
-            record["SECURITY SPIN"],
-            record["T/D QUANTITY"],
-            record["T/D QUANTITY SIGN"],
-            record["T/D COST"],
-            record["T/D COST SIGN"],
-            record["T/D UNREALIZED P/L"],
-            record["T/D UNREALIZED P/L SIGN"],
-            record["BOND FREQUENCY CODE"],
-            record["DATE LAST CALCULATED"],
-            record["HAIRCUT %"],
-            record["HAIRCUT % SIGN"],
-            record["CONCESSION"],
-            record["CONCESSION SIGN"],
-            record["HOUSE PRICE"],
-            record["HOUSE PRICE SIGN"],
-            record["T/D REALIZED P/L"],
-            record["T/D REALIZED P/L SIGN"],
-            record["FILLER 8"],
-            record["RECORD FLAGS"],
-            record["MARKET PRICE"],
-            record["IDA SIGN"],
-            record["IDA"],
-            record["MSD CLASS CODE"],
-            record["FILLER 9"],
-            record["ACCOUNT CHECK DIGIT"]
-        ])
-        
-    elif rowType == "Trading Analysis Settlement Date":
-
-        # Trading Analysis Settlement Date
-        # Fields:     34 in/35 out
-        # Transforms: 2
-
-        record["_ROW_DATA"] = "|".join([
-            record["CLIENT NUMBER"],
-            record["BRANCH NUMBER"],
-            record["ACCOUNT NUMBER"],
-            record["FOREIGN CURRENCY CODE"],
-            record["ACCOUNT TYPE"],
-            record["NEW ACCOUNT TYPE"],
-            
-            record["SECURITY NUMBER"],
-            record["FILLER 1"],
-            record["TRID"],
-            record["SPIN"],
-            record["SECURITY DESCRIPTION"],
-            record["OPTION EXPIRATION DATE"],
-            record["FILLER 2"],
-            record["INTEREST FREQUENCY"],
-            record["S/D QUANTITY"],
-            record["S/D QUANTITY SIGN"],
-            record["S/D COST"],
-            record["S/D COST SIGN"],
-            record["MEMO INTEREST CHARGE"],
-            record["MEMO INTEREST CHARGE SIGN"],
-            record["DIVIDEND/INTEREST"],
-            record["DIVIDEND/INTEREST SIGN"],
-            record["GROSS CREDIT"],
-            record["GROSS CREDIT SIGN"],
-            record["EARNED INTEREST"],
-            record["EARNED INTEREST SIGN"],
-            record["INTEREST RATE"],
-            record["INTEREST RATE SIGN"],
-            record["S/D REALIZED P/L"],
-            record["S/D REALIZED P/L SIGN"],
-            record["FILLER 7"],
-            record["IDA"],
-            record["FILLER 8"],
-            record["ACCOUNT CHECK DIGIT"],
-            record["FILLER 9"]
-        ])
-
-    elif rowType == "When-Issue Trading Trailer":
-
-        # When-Issue Trading Trailer
-        # Fields:     35 in/36 out
-        # Transforms: 2
-
-        record["_ROW_DATA"] = "|".join([
-            record["CLIENT NUMBER"],
-            record["BRANCH NUMBER"],
-            record["ACCOUNT NUMBER"],
-            record["FOREIGN CURRENCY CODE"],
-            record["ACCOUNT TYPE"],
-            record["NEW ACCOUNT TYPE"],
-            
-            record["SECURITY NUMBER"],
-            record["FILLER 1"],
-            record["TRID"],
-            record["SPIN"],
-            record["SECURITY DESCRIPTION"],
-            record["OPTION EXPIRATION DATE"],
-            record["FILLER 2"],
-            record["INTEREST FREQUENCY"],
-            record["INTEREST FREQUENCY SIGN"],
-            record["S/D QUANTITY"],
-            record["S/D QUANTITY SIGN"],
-            record["S/D COST"],
-            record["S/D COST SIGN"],
-            record["MEMO INTEREST CHARGE"],
-            record["MEMO INTEREST CHARGE SIGN"],
-            record["DIVIDEND/INTEREST"],
-            record["DIVIDEND/INTEREST SIGN"],
-            record["GROSS CREDIT"],
-            record["GROSS CREDIT SIGN"],
-            record["EARNED INTEREST"],
-            record["EARNED INTEREST SIGN"],
-            record["INTEREST RATE"],
-            record["INTEREST RATE SIGN"],
-            record["S/D REALIZED P/L"],
-            record["S/D REALIZED P/L SIGN"],
-            record["FILLER 7"],
-            record["IDA"],
-            record["FILLER 8"],
-            record["ACCOUNT CHECK DIGIT"],
-            record["FILLER 9"]
-        ])
-        
-    elif rowType == "Customer Balance, F/Type":
-
-        # Customer Balance, F/Type
-        # Fields:     37 in/38 out
-        # Transforms: 2
-
-        record["_ROW_DATA"] = "|".join([
-            record["CLIENT NUMBER"],
-            record["BRANCH NUMBER"],
-            record["ACCOUNT NUMBER"],
-            record["FOREIGN CURRENCY CODE"],
-            record["ACCOUNT TYPE"],
-            record["NEW ACCOUNT TYPE"],
-
-            record["HIGH−VALUE"],
-            record["DATE LAST ACTIVE (BKPG / MRGN)"],
-            record["FILLER 1"],
-            record["TRID"],
-            record["SPIN"],
-            record["CUSTOMER SHORT NAME"],
-            record["CUSTOMER INSTRUCTIONS"],
-            record["ACCOUNT CODE"],
-            record["RR CODE"],
-            record["FILLER 2"],
-            record["S/D BALANCE SIGN"],
-            record["S/D BALANCE"],
-            record["T/D BALANCE/MARKET VALUE SIGN"],
-            record["T/D BALANCE/MARKET VALUE"],
-            record["OUTSTANDING CALL / DAY−2 CALL SIGN"],
-            record["OUTSTANDING CALL / DAY−2 CALL"],
-            record["SMA CALL/DAY−3 CALL SIGN"],
-            record["SMA CALL/DAY−3 CALL"],
-            record["BUYING POWER/DAY−5 CALL SIGN"],
-            record["BUYING POWER/DAY−5 CALL"],
-            record["MARGIN/CASH DEFICIENCY SIGN"],
-            record["MARGIN/CASH DEFICIENCY"],
-            record["MARGIN INTEREST ACCUMULATION SIGN"],
-            record["MARGIN INTEREST ACCUMULATION"],
-            record["HOUSE EXCESS SIGN"],
-            record["HOUSE EXCESS"],
-            record["ISIP INDEX COST SIGN"],
-            record["ISIP INDEX COST"],
-            record["TBD SIGN"],
-            record["TBD"],
-            record["FILLER 9"],
-            record["ACCOUNT CHECK DIGIT"]
-        ])
-            
-    elif rowType == "Loan Account":
-
-        # Loan Account
-        # Fields:     19 in/20 out
-        # Transforms: 2
-
-        record["_ROW_DATA"] = "|".join([
-            record["CLIENT NUMBER"],
-            record["BRANCH NUMBER"],
-            record["ACCOUNT NUMBER"],
-            record["FOREIGN CURRENCY CODE"],
-            record["ACCOUNT TYPE"],
-            record["NEW ACCOUNT TYPE"],
-
-            record["FILLER 1"],
-            record["DATE LAST ACTIVE (BKPG / MRGN)"],
-            record["TRID"],
-            record["SPIN"],
-            record["ACCOUNT NAME"],
-            record["ACCOUNT CODES"],
-            record["FILLER 2"],
-            record["S/D BALANCE SIGN"],
-            record["S/D BALANCE"],
-            record["MARKET VALUE OF SECURITIES SIGN"],
-            record["MARKET VALUE OF SECURITIES"],
-            record["RATIO MV−TO−S/D BALANCE SIGN"],
-            record["RATIO MV−TO−S/D BALANCE"],
-            record["FILLER 9"]
-        ])
-
-    elif rowType == "Customer Balance, Last in Account":
-
-        # Customer Balance, Last in Account
-        # Fields:     50 in/51 out
-        # Transforms: 3
-
-        record["_ROW_DATA"] = "|".join([
-            record["CLIENT NUMBER"],
-            record["BRANCH NUMBER"],
-            record["ACCOUNT NUMBER"],
-            record["FOREIGN CURRENCY CODE"],
-            record["ACCOUNT TYPE"],
-            record["NEW ACCOUNT TYPE"],
-            
-            record["HIGH−VALUE (BPS Internal use only)"],
-            record["DATE LAST ACTIVE"],
-            record["DATE"],
-            record["TRID"],
-            record["SPIN"],
-            record["CUSTOMER SHORT NAME"],
-            record["CUSTOMER INSTRUCTIONS"],
-            record["ACCOUNT CODE"],
-            record["RR CODE"],
-            record["FILLER 2"],
-            record["S/D BALANCE SIGN"],
-            record["S/D BALANCE"],
-            record["T/D BALANCE/MARKET VALUE SIGN"],
-            record["T/D BALANCE/MARKET VALUE"],
-            record["TODAYS CALL/DAY−1 CALL SIGN"],
-            record["TODAYS CALL/DAY−1 CALL"],
-            record["OUTSTANDING CALL / DAY−2 CALL SIGN"],
-            record["OUTSTANDING CALL / DAY−2 CALL"],
-            record["SMA CALL/DAY−3 CALL SIGN"],
-            record["SMA CALL/DAY−3 CALL"],
-            record["HOUSE CALL/DAY−4 CALL SIGN"],
-            record["HOUSE CALL/DAY−4 CALL"],
-            record["BUYING POWER/DAY−5 CALL SIGN"],
-            record["BUYING POWER/DAY−5 CALL"],
-            record["CASH AVAILABLE OR EQUITY PERCENT SIGN"],
-            record["CASH AVAILABLE OR EQUITY PERCENT"],
-            record["MARGIN/CASH DEFICIENCY SIGN"],
-            record["MARGIN/CASH DEFICIENCY"],
-            record["TYPE 5 BALANCE IN TYPE 2 A/C SIGN"],
-            record["TYPE 5 BALANCE IN TYPE 2 A/C"],
-            record["FILLER 7"],
-            record["MARGIN INTEREST ACCUMULATION SIGN"],
-            record["MARGIN INTEREST ACCUMULATION"],
-            record["HOUSE EXCESS SIGN"],
-            record["HOUSE EXCESS"],
-            record["ISIP INDEX COST SIGN"],
-            record["ISIP INDEX COST"],
-            record["FILLER 8"],
-            record["LANGUAGE"],
-            record["FILLER 9"],
-            record["ACCOUNT RANGE INDICATOR"],
-            record["TELEPHONE NUMBER"],
-            record["ISIP NET P/S SIGN"],
-            record["ISIP NET P/S"],
-            record["ACCOUNT CHECK DIGIT"],
-        ])
-                
-    elif rowType == "Client Totals Header":
-    
-        # Client Totals Header
-        record["_ROW_DATA"] = record["value"]
-
-    elif rowType == "Client Totals Trailer":
-    
-        # Client Totals Trailer
-        record["_ROW_DATA"] = record["value"]
-
-    elif rowType == "Date Record":
-    
-        # Date Record
-        record["_ROW_DATA"] = record["value"]
-
     else:
         # Bad structure of the record
         record["_ROW_DATA"] = record["value"]
-    
+        
+    print("OK52")
     return record
 
 #---------------------------------------------------------------------------------------------------------------------
 # Apply the output row structure to the DynamicFrame
 #---------------------------------------------------------------------------------------------------------------------
 
-mapped_target_dyf = Map.apply(frame = transformed_dyf, f = CreateOutputRowStructure)
+transformed_count = transformed_dyf.count()
+if transformed_count > 0:
+    mapped_target_dyf = Map.apply(frame = transformed_dyf, f = CreateOutputRowStructure)
+ 
+    mapOutputErrCount = mapped_target_dyf.stageErrorsCount()
+    if mapOutputErrCount > 0:
+        mapped_target_dyf.errorsAsDynamicFrame().toDF().coalesce(1).write.mode("overwrite").json(errorPath)
+       
+        RenameDataLakeFile(bucketURI, errorPath, outputPath, mapOutputErrFileName)
+        #raise Exception(f"Errors [{outputMappingErrCount}] during output record mapping.")
+ 
+    #print(mapOutputErrCount)
+    #error_frame = target_dyf.errorsAsDynamicFrame()
+ 
+    # Merge the partitions of the DataFrame
+    if mapped_target_dyf.count() > 0:
+        output_target_df = mapped_target_dyf.select_fields(["_ROW_ID", "_ROW_TYPE", "_ROW_DATA"]).toDF()
+ 
+        # Diagnostic target file with _ROW_ID and _ROW_TYPE
+        output_target_df.coalesce(1).sortWithinPartitions("_ROW_ID").write.format("csv") \
+            .option("header","true").option("lineSep","\r\n").option("sep","|") \
+            .option("ignoreLeadingWhiteSpace", "false").option("ignoreTrailingWhiteSpace", "false") \
+            .mode("overwrite").save(targetPathExt)
+        RenameDataLakeFile(bucketURI, targetPathExt, outputPath, targetFileName + "_WITH_ROW_ID")
 
-mapOutputErrCount = mapped_target_dyf.stageErrorsCount()
-if mapOutputErrCount > 0:
-    mapped_target_err_df = mapped_target_dyf.errorsAsDynamicFrame().repartition(1).toDF()
-    mapped_target_err_df.write.mode("append").json(errorPath)
-    
-    RenameDataLakeFile(bucketURI, errorPath, errorPath, mapOutputErrFileName)
-    #raise Exception(f"Errors [{outputMappingErrCount}] during output record mapping.")
+else:
+    # Define the schema
+    schema = StructType([
+        StructField("_ROW_ID", IntegerType(), True),
+        StructField("_ROW_TYPE", StringType(), True),
+        StructField("_ROW_DATA", StringType(), True)
+    ])
+ 
+    # Create an empty DataFrame with the defined schema
+    output_target_df = sparkSession.createDataFrame(data=[], schema=schema)
+ 
 
-print(mapOutputErrCount)
-#error_frame = target_dyf.errorsAsDynamicFrame()
-#error_frame.show()
 
 #---------------------------------------------------------------------------------------------------------------------
 # Output the target file
 #---------------------------------------------------------------------------------------------------------------------
+if transformed_dyf.count() > 0:
+    # Merge the partitions of the DataFrame
+    merged_target_df = mapped_target_dyf.select_fields(["_ROW_ID", "_ROW_TYPE", "_ROW_DATA"]).repartition(1).toDF()
 
-# Merge the partitions of the DataFrame
-merged_target_df = mapped_target_dyf.select_fields(["_ROW_ID", "_ROW_TYPE", "_ROW_DATA"]).repartition(1).toDF()
+    output_target_df = merged_target_df.select(["_ROW_TYPE", "_ROW_DATA"]).orderBy(merged_target_df["_ROW_ID"].cast(IntegerType()))
+    output_target_df.show()
 
-output_target_df = merged_target_df.select(["_ROW_TYPE", "_ROW_DATA"]).orderBy(merged_target_df["_ROW_ID"].cast(IntegerType()))
-output_target_df.show()
+    output_target_df.select("_ROW_DATA").write.mode("append").option("lineSep","\r\n").text(targetPath)
 
-output_target_df.select("_ROW_DATA").write.mode("append").option("lineSep","\r\n").text(targetPath)
-
-RenameDataLakeFile(bucketURI, targetPath, outputPath, targetFileName)
+    RenameDataLakeFile(bucketURI, targetPath, outputPath, targetFileName)
 
 #---------------------------------------------------------------------------------------------------------------------
 # Process and output the rejected file
 #---------------------------------------------------------------------------------------------------------------------
 
-# Merge the partitions of the DataFrame
-merged_rejected_df = rejected_dyf.select_fields(["_ROW_ID", "_ROW_TYPE", "_ROW_STATUS", "_ROW_EXCEPTIONS", "value"]).repartition(1).toDF()
+from pyspark.sql import functions as F
+from pyspark.sql.types import IntegerType, ArrayType, StringType
 
-# Transform the exceptions column
-rejected_df = merged_rejected_df.select([
-                "_ROW_ID", 
-                "_ROW_TYPE",
-                "_ROW_STATUS", 
-                (concat_ws(";", merged_rejected_df["_ROW_EXCEPTIONS"])).alias("_ROW_EXCEPTIONS"), 
-                merged_rejected_df["value"].alias("_ROW_DATA")
-              ]).orderBy(merged_rejected_df["_ROW_ID"].cast(IntegerType()))
+df = rejected_dyf.toDF().repartition(1)
 
-#rejected_df.show()
+for c in ["_ROW_ID", "_ROW_TYPE", "_ROW_STATUS", "_ROW_EXCEPTIONS", "value"]:
+    if c not in df.columns:
+        df = df.withColumn(c, F.lit(None))
 
-# Output the rejected file
-output_rejected_df = rejected_df.select(["_ROW_ID", "_ROW_TYPE", "_ROW_STATUS", "_ROW_DATA"])
-output_rejected_df.write.option("header","true").option("lineSep","\r\n").option("sep","|").mode("append").csv(rejectedPath)
+rejected_df = (df.select("_ROW_ID","_ROW_TYPE","_ROW_STATUS",F.when( F.col("_ROW_EXCEPTIONS").isNull(), F.lit(None)).otherwise(F.when(F.col("_ROW_EXCEPTIONS").cast(ArrayType(StringType())).isNotNull(),F.concat_ws(";", F.col("_ROW_EXCEPTIONS").cast(ArrayType(StringType())))).otherwise(F.to_json(F.col("_ROW_EXCEPTIONS")))).alias("_ROW_EXCEPTIONS"),F.col("value").alias("_ROW_DATA")).orderBy(F.col("_ROW_ID").cast(IntegerType())))
 
-RenameDataLakeFile(bucketURI, rejectedPath, outputPath, rejectedFileName)
+is_empty = rejected_df.isEmpty()       
 
+if is_empty:
+    print("No errors found in rejected_dyf.")
+else:
+    output_rejected_df = rejected_df.select(["_ROW_ID", "_ROW_TYPE", "_ROW_STATUS", "_ROW_DATA"]).orderBy("_ROW_TYPE")
+    output_rejected_df.write.option("header", "true").option("lineSep", "\r\n").option("sep", "|").mode("append").csv(rejectedPath)
+
+# If you need to rename/move the created file(s)
+    RenameDataLakeFile(bucketURI, rejectedPath, outputPath, rejectedFileName)
+    
+output_rejected_df.show()
+from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType
+
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+sc = SparkContext.getOrCreate()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+
+
+exceptions_schema = StructType([
+StructField("_ROW_ID",        IntegerType(), True),
+StructField("_ROW_TYPE",      StringType(),  True),
+StructField("_ROW_STATUS",    StringType(),  True),
+StructField("_ROW_EXCEPTIONS",StringType(),  True),
+StructField("_ROW_DATA",      StringType(),  True)
+        ])
+exceptions_df = spark.createDataFrame([], exceptions_schema)
+exceptions_df.show()
 #---------------------------------------------------------------------------------------------------------------------
 # Process and output the exceptions file
 #---------------------------------------------------------------------------------------------------------------------
 
-# Extract exceptions
-exceptions_raw_df   = merged_rejected_df.select(["_ROW_ID", "_ROW_TYPE", explode("_ROW_EXCEPTIONS").alias("_ROW_EXCEPTION")])
-exceptions_split_df = exceptions_raw_df.withColumn("_ROW_EXCEPTION_DATA", split(exceptions_raw_df["_ROW_EXCEPTION"], "#"))
+from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType
+
+is_empty = rejected_df.isEmpty()       
+
+if is_empty:
+    exceptions_df = spark.createDataFrame([], exceptions_schema)
+    #exceptions_df.show()
+else:
+    output_rejected_df = rejected_df.select(["_ROW_ID", "_ROW_TYPE", "_ROW_STATUS", "_ROW_DATA"]).orderBy("_ROW_TYPE")
+    #output_rejected_df.write.option("header", "true").option("lineSep", "\r\n").option("sep", "|").mode("append").csv(rejectedPath)
+    exceptions_raw_df   = df.select(["_ROW_ID", "_ROW_TYPE", explode("_ROW_EXCEPTIONS").alias("_ROW_EXCEPTION")])
+    exceptions_split_df = exceptions_raw_df.withColumn("_ROW_EXCEPTION_DATA", split(exceptions_raw_df["_ROW_EXCEPTION"], "#"))
 
 # Extract exceptions details
-exceptions_df = exceptions_split_df.select(
-        "_ROW_ID", 
-        "_ROW_TYPE",
-        (exceptions_split_df["_ROW_EXCEPTION_DATA"][0]).alias("_EXCEPTION_TYPE"),
-        (exceptions_split_df["_ROW_EXCEPTION_DATA"][1]).alias("_EXCEPTION_SOURCE"),
-        (exceptions_split_df["_ROW_EXCEPTION_DATA"][2]).alias("_EXCEPTION_DESC")
-    ).repartition(1).orderBy(exceptions_split_df["_ROW_ID"].cast(IntegerType()))
+    exceptions_df1 = exceptions_split_df.select(
+            "_ROW_ID", 
+            "_ROW_TYPE",
+            (exceptions_split_df["_ROW_EXCEPTION_DATA"][0]).alias("_EXCEPTION_TYPE"),
+            (exceptions_split_df["_ROW_EXCEPTION_DATA"][1]).alias("_EXCEPTION_SOURCE"),
+            (exceptions_split_df["_ROW_EXCEPTION_DATA"][2]).alias("_EXCEPTION_DESC")
+        ).repartition(1).orderBy(exceptions_split_df["_ROW_ID"].cast(IntegerType()))
 
-#exceptions_df.show()
+    # Merge the partitions of the DataFrame and output the exceptions file
+    exceptions_df1.write.option("header","true").option("lineSep","\r\n").option("sep","|").mode("append").csv(exceptionsPath)
 
-# Merge the partitions of the DataFrame and output the exceptions file
-exceptions_df.write.option("header","true").option("lineSep","\r\n").option("sep","|").mode("append").csv(exceptionsPath)
+    RenameDataLakeFile(bucketURI, exceptionsPath, outputPath, exceptionsFileName)
 
-RenameDataLakeFile(bucketURI, exceptionsPath, outputPath, exceptionsFileName)
-
+#exceptions_df1.show()
 #---------------------------------------------------------------------------------------------------------------------
 # Collect Audit data for source rows
 #---------------------------------------------------------------------------------------------------------------------
@@ -2953,7 +1786,15 @@ ex_metadataFilePath = metadataPath + exceptionsMetaFileName
 ex_metadata_df = sparkSession.read.option("header", True).option("sep", '|').csv(ex_metadataFilePath)
 
 # Joining with exceptions metadata
-exceptions_full_df = ex_metadata_df.join(exceptions_df, ex_metadata_df["EXCEPTION_TYPE"] == exceptions_df["_EXCEPTION_TYPE"], "inner")
+#exceptions_full_df = ex_metadata_df.join(exceptions_df, ex_metadata_df["EXCEPTION_TYPE"] == exceptions_df["_EXCEPTION_TYPE"], "inner")
+
+isEmpty = exceptions_df.isEmpty()
+
+if isEmpty:
+    exceptions_full_df = ex_metadata_df.join(exceptions_df, ex_metadata_df["EXCEPTION_TYPE"] == exceptions_df["_ROW_EXCEPTIONS"], "inner")
+else:
+    exceptions_full_df = ex_metadata_df.join(exceptions_df, ex_metadata_df["EXCEPTION_TYPE"] == exceptions_df1["_EXCEPTION_TYPE"], "inner")
+
 
 # Exeption rows results per row type and exception category
 exception_rows_type_df = exceptions_full_df.select(["_ROW_TYPE", "EXCEPTION_CATEGORY"]).groupBy(["_ROW_TYPE", "EXCEPTION_CATEGORY"]).count()
@@ -3033,7 +1874,7 @@ audit_df = audit_merged_df.select([
         "ROW_TYPE",
         "REPORT_LINE_LABEL",
         "REPORT_RESULT_LABEL",
-        (coalesce(audit_merged_df["_REPORT_RESULT_VALUE"], lit(0))).alias("REPORT_RESULT_VALUE"),
+        (audit_merged_df["_REPORT_RESULT_VALUE"]).alias("REPORT_RESULT_VALUE"),
     ]).repartition(1)
 
 audit_df.show()
@@ -3048,6 +1889,14 @@ audit_report_df = audit_df \
 #---------------------------------------------------------------------------------------------------------------------
 
 # Merge the partitions of the DataFrame
+#audit_report_df.write.option("header","true").option("lineSep","\r\n").option("sep","|").option("quote", "").mode("append").csv(auditPath)
+audit_report_df.write.option("header","true").option("lineSep","\r\n").option("sep","\t").option("quote", "").mode("append").csv(auditPath)
+
+RenameDataLakeFile(bucketURI, auditPath, outputPath, auditFileName)
+#---------------------------------------------------------------------------------------------------------------------
+# Output the tabular audit file
+#---------------------------------------------------------------------------------------------------------------------
+
 audit_report_pivot_df = audit_df.groupBy(["FILE_NAME", "ROW_TYPE_NO", "ROW_TYPE"]).pivot("REPORT_RESULT_LABEL").sum("REPORT_RESULT_VALUE") \
     .repartition(1).orderBy([audit_df["ROW_TYPE_NO"].cast(IntegerType())])
 
@@ -3073,7 +1922,7 @@ audit_report_tab_df = audit_report_pivot_df \
         "Missing data"
     ])
 
-audit_report_tab_df.write.option("header","true").option("lineSep","\r\n").option("sep","|").option("quote", "").mode("append").csv(auditPath)
+audit_report_tab_df.write.option("header","true").option("lineSep","\r\n").option("sep","\t").option("quote", "").mode("append").csv(auditPath)
 
 RenameDataLakeFile(bucketURI, auditPath, outputPath, "TAB." + auditFileName)
 #---------------------------------------------------------------------------------------------------------------------
