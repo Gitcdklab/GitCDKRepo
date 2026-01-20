@@ -1,0 +1,5180 @@
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql import SQLContext
+from pyspark.sql.functions import monotonically_increasing_id, lit, concat_ws, split, explode, coalesce 
+from pyspark.sql.types import IntegerType
+
+#args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+sc = SparkContext.getOrCreate()
+glueContext = GlueContext(sc)
+sparkSession = glueContext.spark_session
+sqlContext = SQLContext(sparkSession.sparkContext, sparkSession)
+
+job = Job(glueContext)
+#job.init(args['JOB_NAME'], args)
+
+#---------------------------------------------------------------------------------------------------------------------
+# Files and folders
+#---------------------------------------------------------------------------------------------------------------------
+
+# source file code, file name and Athena table name
+fileCode               = "RSPNAX"
+sourceFileName         = fileCode + '.SAMPLEFILE'
+sourceTableName        = 'rspnax_sourcefile'
+
+# S3 bucket and root transformation folder
+bucketURI              = 's3://wdda1-ue1-dev-rise-inbound1'
+transformPath          = bucketURI + '/transformation/'
+
+# shared folders
+lookupPath             = transformPath + 'lookup/'
+metadataPath           = transformPath + 'metadata/'
+outputPath             = transformPath + 'output/'
+
+# file specific folders
+sourcePath             = transformPath + fileCode + '/source/'
+targetPath             = transformPath + fileCode + '/target/'
+rejectedPath           = transformPath + fileCode + '/rejected/'
+exceptionsPath         = transformPath + fileCode + '/exceptions/'
+auditPath              = transformPath + fileCode + '/audit/'
+errorPath              = transformPath + fileCode + '/error/'
+
+# file names
+fileMetaFileName       = fileCode + '-metadata.txt'
+exceptionsMetaFileName = 'exceptions-metadata.txt'
+auditMetaFileName      = 'audit-metadata.txt'
+
+targetFileName         = sourceFileName + ".OUTPUT.txt"
+rejectedFileName       = sourceFileName + ".REJECTED.txt"
+exceptionsFileName     = sourceFileName + ".EXCEPTIONS.txt"
+auditFileName          = sourceFileName + ".AUDIT.txt"
+mapStructErrFileName   = sourceFileName + ".MAP_STRUCT_ERRORS.txt"
+mapOutputErrFileName   = sourceFileName + ".MAP_OUTPUT_ERRORS.txt"
+logFileName            = sourceFileName + ".LOG.txt"
+
+#---------------------------------------------------------------------------------------------------------------------
+# RenameDataLakeFile
+#---------------------------------------------------------------------------------------------------------------------
+
+def RenameDataLakeFile(s3BucketURI, sourcePath, targetPath, newFileName):
+    
+    URI = sc._gateway.jvm.java.net.URI
+    Path = sc._gateway.jvm.org.apache.hadoop.fs.Path
+    FileSystem = sc._gateway.jvm.org.apache.hadoop.fs.FileSystem
+    
+    fs = FileSystem.get(URI(s3BucketURI), sc._jsc.hadoopConfiguration())
+
+    # rename created file
+    outputFilePath = fs.globStatus(Path(sourcePath + "part*"))[0].getPath()
+    fs.rename(outputFilePath, Path(targetPath + newFileName))
+
+#---------------------------------------------------------------------------------------------------------------------
+# Read the b212 sourcefile into a DynamicFrame from the ascii_samplefile Athena table
+#---------------------------------------------------------------------------------------------------------------------
+
+#source_df = sqlContext.sql("SELECT monotonically_increasing_id() as _ROW_ID, value FROM rise_etl.b212_sourcefile")
+source_df = sqlContext.sql("SELECT monotonically_increasing_id() as _ROW_ID, value FROM text.`" + sourcePath + sourceFileName + ".txt`")
+
+#source_df.show()
+
+source_dyf = DynamicFrame.fromDF(source_df, glueContext)
+source_dyf.show()
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read 10A - PRINCIPAL PARTY lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D10A-01-IraSepKeoghIndicator#
+mapIraSepKeoghIndicatorCode = {
+           '1': 'A',
+           '2': 'B',
+           '3': 'C',
+           '4': 'D',
+           '5': 'E',
+           '6': 'F',
+           '7': 'G',
+           '8': 'H',
+           '9': 'I',
+           'A': '1',
+           'B': '2',
+           'C': '3',
+           'D': '4',
+           'E': '5',
+           'F': '6',
+           'G': '7',
+           'H': '9',
+           'I': '10',
+           'J': '11',
+           'K': '12',
+           'L': '13',
+           'M': '14',
+           'N': '15',
+           'O': '16',
+           'P': '17',
+           'Q': '18',
+           'R': '19',
+           'S': '20',
+           'T': '34',
+           'U': '35',
+           'V': '36',
+           'W': '39',
+           'X': '40',
+           'Y': '41',
+           'Z': '42',   
+           '0': '43'            
+}
+print(f"D10A-01: {mapIraSepKeoghIndicatorCode}")
+
+#D10A-02-RegisteredRepresentative1#
+mapRegisteredRepresentative1Code = {
+           'TYPE 1': 'C',
+           'TYPE 2': 'M',
+           'TYPE 3': 'D',
+           'TYPE 4': 'Q',
+           'TYPE 5': 'S',
+           'TYPE 6': 'P',
+           'TYPE 7': 'B',
+           'TYPE 8': 'Y',
+           'TYPE 9': 'X',
+           'TYPE 0': '-'
+}
+print(f"D10A-02: {mapRegisteredRepresentative1Code}")
+
+#D10A-03-DebitInterestCode#
+mapDebitInterestCode = {
+           'F': 'D',   
+           'V': 'A'  
+}
+print(f"D10A-03: {mapDebitInterestCode}")
+
+#D10A-04-CreditInterestCode#
+mapCreditInterestCode = {
+           'F': 'D',   
+           'V': 'A'
+}
+print(f"D10A-04: {mapCreditInterestCode}")
+
+#D10A-05-SocialSecurityTaxidCode1#
+mapSocialSecurityTaxidCode1 = {
+           '1': 'U',
+           '2': 'T',
+           '3': 'C'
+}
+print(f"D10A-05: {mapSocialSecurityTaxidCode1}")
+
+#D10A-06-DividendCode#
+mapDividendCode = {
+           '1': 'P',
+           '2': 'H',
+           '3': 'D',
+           '4': 'W',
+           '5': 'Q',
+           '6': 'S',
+           '7': 'M'         
+}
+print(f"D10A-06: {mapDividendCode}")
+
+#D10A-07-BuyInstructionsCode#
+mapBuyInstructionsCode = {
+           '01': 'TS',
+           '02': 'TH',
+           '03': 'FN',
+           '04': 'SI',
+           '05': 'DP',
+           '06': 'SI',
+           '10': 'SI',
+           '0A': 'RS',
+           '0B': 'BS',
+           '0C': 'TS',
+           '0D': 'TH',
+           '0E': 'FN'           
+}
+print(f"D10A-07: {mapBuyInstructionsCode}")
+
+#D10A-08-SellInstructionsCode#
+mapSellInstructionsCode = {
+           '06': 'RP',
+           '07': 'HF',
+           '08': 'SF',
+           '09': 'SD',
+           '11': 'SI'
+}
+print(f"D10A-08: {mapSellInstructionsCode}")
+
+##RED##To be implemented
+#D10A-09-GeographicLocationCode#
+#mapGeographicLocationCode = {
+#}
+#print(f"D10A-09: {mapGeographicLocationCode}")
+
+#D10A-10-SpecialBondCommissionCode#
+mapSpecialBondCommissionCode = {
+           '2': '125',
+           '3': '300',
+           '4': '400',
+           '5': '500',
+           '6': '750',
+           '7': '100',
+           '8': '888',
+           '9': '000',
+           'T': '250',
+           'W': '006',
+           'Y': '350',           
+           'Z': '250'         
+}
+print(f"D10A-10: {mapSpecialBondCommissionCode}")
+
+#D10A-11-SpecialStockCommissionCode#
+mapSpecialStockCommissionCode = {
+           '1': 'A',
+           '2': 'B',
+           '3': 'C',
+           '4': 'D',
+           '5': 'E',
+           '7': 'F',
+           '8': 'G',
+           '9': 'H',
+           'A': '1',
+           'B': '2',
+           'C': '3',           
+           'D': '4'
+##RED##More data to be added           
+}
+print(f"D10A-11: {mapSpecialStockCommissionCode}")
+
+#D10A-12-PortfolioStatusReportingCode#
+mapPortfolioStatusReportingCode = {
+           '4': 'J',
+           '5': 'K',
+           '6': 'L',
+           '7': 'M'
+}
+print(f"D10A-12: {mapPortfolioStatusReportingCode}")
+
+#D10A-13-TrustAgreementKnowYourCustomerCode#
+mapTrustAgreementKnowYourCustomerCode = {
+           '1': 'T',
+           '2': 'K'
+}
+print(f"D10A-13: {mapTrustAgreementKnowYourCustomerCode}")
+
+#D10A-14-MarginAgreementOnFileCode#
+mapMarginAgreementOnFileCode = {
+           '1': 'Y'
+}
+print(f"D10A-14: {mapMarginAgreementOnFileCode}")
+
+#D10A-15-JointAgreementCorporateResolutionCode#
+mapJointAgreementCorporateResolutionCode = {
+           '1': 'A',
+           '2': 'B',
+           '3': 'C',
+           '4': 'D',
+           '5': 'E'
+}
+print(f"D10A-15: {mapJointAgreementCorporateResolutionCode}")
+
+#D10A-16-LoanAgreementOnFileCode#
+mapLoanAgreementOnFileCode = {
+           '1': 'Y'
+print(f"D10A-16: {mapLoanAgreementOnFileCode}")
+
+#D10A-17-GuaranteedGuarantorAccountCode#
+mapGuaranteedGuarantorAccountCode = {
+           '1': 'GA',
+           '2': 'GR',
+           '3': 'GG'
+}
+print(f"D10A-17: {mapGuaranteedGuarantorAccountCode}")
+
+#D10A-18-AutomaticDailyFundTransferSweepCode#
+mapAutomaticDailyFundTransferSweepCode = {
+           '0': 'D',
+           '1': 'C',
+           '2': 'C',
+           '3': 'C',
+           '4': 'C',
+           '5': 'C',
+           'C': 'C',
+           'J': '2',
+           'K': '2',
+           'L': '2',
+           'M': '2',
+           'N': '2',
+           'U': '4',
+           'V': '5',
+           'W': '6',
+           'X': '7'
+}
+print(f"D10A-18: {mapAutomaticDailyFundTransferSweepCode}")
+
+#D10A-19-AutomaticCashManagementAcmCode#
+mapAutomaticCashManagementAcmCode = {
+           '0': 'D',
+           '1': 'A',
+           '2': 'A',
+           '3': 'A',
+           '4': 'A',
+           '5': 'A',
+           'P': 'A',
+           'A': 'Y',
+           'B': 'Y',
+           'C': 'Y',
+           'D': 'Y',
+           'E': 'Y',
+           'F': 'B',
+           'I': 'B',
+           'J': 'B',
+           'M': 'B',
+           'Z': 'M',
+           '9': 'S'           
+}
+print(f"D10A-19: {mapAutomaticCashManagementAcmCode}")
+
+#D10A-20-UsaTaxWithholdingIndicatorCode#
+mapUsaTaxWithholdingIndicatorCode = {
+           '1': 'A',
+           '2': 'A',
+           '4': 'B',
+           '5': 'C',
+           '6': 'D',
+           '7': 'E',
+           '8': 'F',           
+           '9': 'G',
+           'A': '1',
+           'B': '2',
+           'C': '3',           
+           'D': '4',
+           'E': '5',
+           'F': '6',           
+           'G': '7',
+           'N': '8',           
+           'P': '9'
+#           'X': ##RED##To be implemented           
+#           'Y': ##RED##To be implemented            
+}
+print(f"D10A-20: {mapUsaTaxWithholdingIndicatorCode}")
+
+#D10A-21-OptionAgreementIaBlanketLetterDiscretionaryCode#
+mapOptionAgreementIaBlanketLetterDiscretionaryCode = {
+           '1': 'TA',
+           '2': 'IA',
+           '3': 'TI',
+           '4': 'DA',
+           '5': 'TD',
+           '8': 'LD',
+           '9': 'LT'
+}
+print(f"D10A-21: {mapOptionAgreementIaBlanketLetterDiscretionaryCode}")
+
+#D10A-22-90DayRestrictionIndicatorCode#
+map90DayRestrictionIndicatorCode = {
+           '1': 'YES'
+}
+print(f"D10A-22: {map90DayRestrictionIndicatorCode}")
+
+#D10A-23-NoMoreBusinessIndicatorCode#
+mapNoMoreBusinessIndicatorCode = {
+           '1': 'C',
+           '2': 'M',
+           '3': 'B',
+           '4': 'P',
+           '5': 'O',
+           '6': 'R',
+           '7': 'K' 
+}
+print(f"D10A-23: {mapNoMoreBusinessIndicatorCode}")
+
+#D10A-24-OptionPurchaseSpreadProspectusNoOptionTradingCode#
+mapOptionPurchaseSpreadProspectusNoOptionTradingCode = {
+           '1': 'B',
+           '2': 'S',
+           '3': 'BS',
+           '4': 'PS',
+           '5': 'PP',
+           '6': 'SS',
+           '7': 'YY',           
+           '8': 'N'           
+}
+print(f"D10A-24: {mapOptionPurchaseSpreadProspectusNoOptionTradingCode}")
+
+#D10A-25-NakedPutSellingNakedWritingCoverWritingCode#
+mapABCodeNakedPutSellingNakedWritingCoverWritingCode = {
+           '1': 'CW',
+           '2': 'NOPS',
+           '3': 'CSNP',
+           '4': 'NWNP',
+           '5': 'CNPW'
+}
+print(f"D10A-25: {mapABCodeNakedPutSellingNakedWritingCoverWritingCode}")
+
+#D10A-26-Type3CreditIncomeOptionDividendIncomeCode#
+mapType3CreditIncomeOptionDividendIncomeCode = {
+           '0': '0',
+           '1': 'A'
+}
+print(f"D10A-26: {mapType3CreditIncomeOptionDividendIncomeCode}")
+
+#D10A-27-DividendBuyFractionCode#
+mapDividendBuyFractionCode = {
+           '1': 'R'
+}
+print(f"D10A-27: {mapDividendBuyFractionCode}")
+
+#D10A-28-MarginAccountInsuranceCode#
+mapMarginAccountInsuranceCode = {
+           '1': 'A',
+           '2': 'B',
+           '3': 'C',
+           '4': 'D',
+           '5': 'E',
+           '6': 'F',
+           '7': 'G',
+}
+print(f"D10A-28: {mapMarginAccountInsuranceCode}")
+
+#D10A-29-ReInvestmentCode#
+mapReInvestmentCode = {
+           '1': 'REIN',
+           '2': 'RENC',
+           '3': 'SHAC',
+           '4': 'BOTH',
+           '0': 'NONE'
+}
+print(f"D10A-29: {mapReInvestmentCode}")
+
+#D10A-30-ObjectToDisclosureCodeProxyCode#
+mapObjectToDisclosureCodeProxyCode = {
+           '1': 'NONE',
+           '2': 'OKAY',
+           '3': 'YANO',
+           '4': 'NOYA',
+           '5': 'DISC',
+           '6': 'OBJD'           
+}
+print(f"D10A-30: {mapObjectToDisclosureCodeProxyCode}")
+
+#D10A-31-BrokerBookIndicatorCode#
+mapBrokerBookIndicatorCode = {
+           'Y': '1'
+}
+print(f"D10A-31: {mapBrokerBookIndicatorCode}")
+
+#D10A-32-YearEndRecordIndicatorSystemGeneratedCode#
+mapYearEndRecordIndicatorSystemGeneratedCode = {
+           'Y': '1',
+           'P': '2',
+           'D': '3'
+}
+print(f"D10A-32: {mapYearEndRecordIndicatorSystemGeneratedCode}")
+
+##RED##TO be checked and implemented
+#D10A-33- ProvidentBankCashSweepFundProcessorCode#
+#mapProvidentBankCashSweepFundProcessorCode = {
+#}
+print(f"D10A-33: {mapProvidentBankCashSweepFundProcessorCode}")
+
+##RED##TO be checked and implemented
+#D10A-34-CurrencyCode#
+#mapCurrencyCode = {
+#}
+#print(f"D10A-34: {mapCurrencyCode}")
+
+##RED## to be checked
+#D10A-35-ConfirmHoldCode#
+# mapConfirmHoldCode = {
+           # 'K': 'K',
+           # 'L': 'L',
+           # 'M': 'M',
+           # 'N': 'N',
+           # 'O': 'O',
+           # 'P': 'P',
+           # 'Q': 'Q',
+           # 'R': 'R',
+           # 'S': 'S',
+           # 'U': 'U',
+           # 'V': 'V',
+           # 'W': 'W',
+           # 'X': 'X',
+           # 'Y': 'Y', 
+           # 'Z': 'Z',
+           # 'T': 'N'           
+# }
+print(f"D10A-35: {mapConfirmHoldCode}")
+
+#D10A-36-InvoiceConfirmationsCode#
+mapInvoiceConfirmationsCode = {
+           '0': 'A',
+           '1': 'B',
+           '2': 'C',
+           '3': 'D'           
+}
+print(f"D10A-36: {mapInvoiceConfirmationsCode}")
+
+#D10A-37-MailingListInstructionsCode#
+mapMailingListInstructionsCode = {
+           '1': 'W',
+           '2': 'M',
+           '3': 'Q'      
+           '4': 'A',
+           '7': 'F',
+           '8': 'R',
+           '9': 'D'           
+}
+print(f"D10A-37: {mapMailingListInstructionsCode}")
+
+#D10A-38-RelatedAccountCodeInvestmentAdvisorAcctCode#
+mapRelatedAccountCodeInvestmentAdvisorAcctCode = {
+           '0': ' ',
+           '1': 'MRG',
+           '2': 'INT',
+           '3': 'MI',
+           '4': 'IA',
+           '5': 'DFI'            
+}
+print(f"D10A-38: {mapRelatedAccountCodeInvestmentAdvisorAcctCode}")
+
+#D10A-39-OptionAccountIndicatorCode#
+mapOptionAccountIndicatorCode = {
+           'Y': '1',
+           'N': '0'
+}
+print(f"D10A-39: {mapOptionAccountIndicatorCode}")
+
+##RED## To be checked
+#D10A-40-CustomerTypeCode
+##See x-ref doc
+
+##RED## To be checked
+#D10A-41-SpecialDocumentsType
+##See x-ref doc
+
+#D10A-42-DueDiligenceCode#
+mapDueDiligenceCode = {
+           '1': 'A',
+           '2': 'B',
+           '3': 'C'      
+           '4': 'D',
+           '5': 'E',
+           '6': 'F',
+           '7': 'G',           
+           '8': 'H' 
+}
+print(f"D10A-42: {mapDueDiligenceCode}")
+
+#D10A-43-PowerOfAttorneyCode#
+mapPowerOfAttorneyCodee = {
+           'Y': '1',           
+           'N': '0'   
+}
+print(f"D10A-43: {mapPowerOfAttorneyCodee}")
+
+#D10A-44-Irs1042RecipientCode#
+mapIrs1042RecipientCode = {
+           '01': 'L',
+           '02': 'M',
+           '03': 'N',
+           '04': 'P',
+           '05': 'Q',
+           '06': 'R',
+           '07': 'T',
+           '08': 'U',
+           '09': 'V',
+           '19': 'W',
+           '20': 'K'  
+}
+print(f"D10A-44: {mapIrs1042RecipientCode}")
+
+#D10A-45-1099DetailAdjustmentStatementIndicatorCode#
+map1099DetailAdjustmentStatementIndicatorCode = {
+           'B': '1',
+           'F': '2',
+           'N': '3',
+           'Y': '4'  
+}
+print(f"D10A-45: {map1099DetailAdjustmentStatementIndicatorCode}")
+
+#D10A-46-1001FormIndicatorCode#
+map1001FormIndicatorCode# = {
+           'Y': '1'
+}
+print(f"D10A-46: {map1001FormIndicatorCode}")
+
+##RED## To be checked
+#D10A-47-AcmCancelCode#
+#mapAcmCancelCode = {
+#           '00': '00',
+#           '03': '03',
+#           '06': '06',
+#           '08': '08'  
+#           '09': '09'
+#}
+#print(f"D10A-47: {mapAcmCancelCode}")
+
+##RED## To be checked
+#D10A-48-AmexTransmitIndicatorCode#
+#mapAmexTransmitIndicatorCode = {
+#           '1': '1',
+#           '2': '2',
+#           '3': '3',
+#           '4': '4',
+#           '8': '8',
+#           '9': '9'
+#}
+#print(f"D10A-48: {mapAmexTransmitIndicatorCode}")
+
+#D10A-49-PreviousDueDiligenceCode2ndNoticeCode#
+mapPreviousDueDiligenceCode2ndNoticeCode = {
+           '1': 'A',
+           '2': 'B',
+           '3': 'C',          
+           '4': 'D'
+}
+print(f"D10A-49: {mapABCode}")
+
+##RED## To be checked
+#D10A-50-SegmentIdOf1stSegmentCode
+#See Segment X-ref
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read 10C - PP, CANADIAN INFO lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D10C-01-ProfessionalAccountCode#
+mapProfessionalAccountCode = {
+           '1': 'IA',
+           '2': 'IR',
+           '3': 'EM'      
+           '4': 'OF',
+           '5': 'RO',
+           '6': 'RR',
+           '7': 'RE',           
+           '8': 'RF',
+           '9': 'BE'
+##RED## To be checked           
+           # 'A': 'A',
+           # 'B': 'B',
+           # 'C': 'C',
+           # 'D': 'D',
+           # 'E': 'E',
+           # 'F': 'F',
+           # 'G': 'G',
+           # 'H': 'H',
+           # 'I': 'I',
+           # 'J': 'J',
+           # 'K': 'K',
+           # 'L': 'L',
+           # 'M': 'M',
+           # 'N': 'N',
+           # 'O': 'O',
+           # 'P': 'P',
+           # 'Q': 'Q',
+           # 'R': 'R',
+           # 'S': 'S',
+           # 'T': 'T',
+           # 'U': 'U',
+           # 'V': 'V',
+           # 'W': 'W',
+           # 'X': 'X', 
+           # 'Y': 'Y',
+           # 'Z': 'Z'            
+}
+print(f"D10C-01: {mapProfessionalAccountCode}")
+
+##RED## To be checked
+#D10C-02-ProvinceCode#
+# mapProvinceCode = {
+           # 'C': 'C',
+           # 'E': 'E',
+           # 'H': 'H'      
+           # 'M': 'M',
+           # 'T': 'T',
+           # 'V': 'V',
+           # 'W': 'W',           
+           # 'X': 'X',
+           # '0': '0', 
+           # '1': '1',
+           # '2': '2',
+           # '3': '3',
+           # '4': '4',
+           # '5': '5',
+           # '6': '6',
+           # '7': '7',
+           # '8': '8',
+           # '9': '9'           
+# }
+# print(f"D10C-02: {mapProvinceCode}")
+
+#D10C-03-CdccClearingCode#
+mapCdccClearingCode = {
+           '1': 'BRS',
+           '2': 'IAS',
+           '3': 'IAT',
+           '4': 'BRB',
+           '5': 'IAB',
+           '6': 'IAA',
+           '7': 'BSB',
+           '8': 'ISB',
+           'N': 'NOA'    
+}
+print(f"D10C-03: {mapCdccClearingCode}")
+
+
+#D10C-04-ApprovedBrokerCode#
+mapApprovedBrokerCode = {
+           '1': 'EMO',
+           '2': 'CMO',
+           '3': 'ECM',
+           '4': 'ANM',
+           '5': 'ANF',
+}
+print(f"D10C-04: {mapApprovedBrokerCode}")
+
+#D10C-05-TurnaroundTradeIndicatorCode#
+mapTurnaroundTradeIndicatorCode = {
+           '0': 'Y',
+           '1': 'N'
+}
+print(f"D10C-05: {mapTurnaroundTradeIndicatorCode}")
+
+#D10C-06-TaperCode#
+mapTaperCode = {
+           '0': 'N',
+           '1': 'D',
+           '2': '0'
+}
+print(f"D10C-06: {mapTaperCode}")
+
+#D10C-07-ChargeFrequencyCode#
+mapChargeFrequencyCode = {
+           '1': 'N',
+           '2': 'M',
+           '3': 'Q',
+           '4': 'A'
+}
+print(f"D10C-07: {mapChargeFrequencyCode}")
+
+#D10C-08-ProspectusMailCode#
+mapProspectusMailCode = {
+           '0': 'Y',
+           '1': 'N'
+}
+print(f"D10C-08: {mapProspectusMailCode}")
+
+#D10C-09- NoDocumentsCode#
+mapNoDocumentsCode = {
+           '0': 'N',
+           '1': 'Y'
+}
+print(f"D10C-09: {mapNoDocumentsCode}")
+
+#D10C-10-CanadianOutbndPaymentMethodACode#
+mapCanadianOutbndPaymentMethodACode = {
+           'CHQ': '1',
+           'EFT': '2',
+           'ABB': '3',
+           'BRH': '4',
+           'CH3': '5',
+           'TFR': '6',           
+           'PIC': '7'
+}
+print(f"D10C-10: {mapCanadianOutbndPaymentMethodACode}")
+
+#D10C-11-CrarqCode#
+mapCrarqCode = {
+           '1': 'I',
+           '2': 'J',
+           '3': 'C',
+           '4': 'O'
+           '5': 'G',
+           '7': 'U'           
+}
+print(f"D10C-11: {mapCrarqCode}")
+
+#D10C-12-MutualFundAcctDestinationIndicatorCode#
+MutualFundAcctDestinationIndicatorCode = {
+           '1': 'RC',
+           '2': 'BN',
+           '3': 'BI'
+}
+print(f"D10C-12: {MutualFundAcctDestinationIndicatorCode}")
+
+#D10C-13-NonConsolidatedCommissionIndicatorCode  #
+NonConsolidatedCommissionIndicatorCode = {
+           '1': 'NO',
+           '2': 'CI'
+}
+print(f"D10C-13: {NonConsolidatedCommissionIndicatorCode}")
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read  10D - PRINCIPAL PARTY RECORD, TELEPHONE SEGMENT lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D10D-01-OldTelephoneIdCode#
+mapOldTelephoneIdCode = {
+           '1': 'A',
+           '2': 'B',
+           '3': 'C',
+           '4': 'D'
+           '5': 'E'
+}
+print(f"D10D-01: {mapOldTelephoneIdCode}")
+
+#D10D-02-PhoneTypeCode#
+mapPhoneTypeCode = {
+           'B': '1',
+           'C': '2',
+           'F': '3',
+           'H': '4',
+           'O': '5',
+           'T': '6',           
+           'Q': '7'
+}
+print(f"D10D-02: {mapPhoneTypeCode}")
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read 10E - PRINCIPAL PARTY RECORD, RELATED ACCOUNTS SEGMENT lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D10E-01-RelatedAccountIdForFirstAreaCode#
+mapRelatedAccountIdForFirstAreaCode = {
+           '05': 'GA',
+           '10': 'RA',
+           '15': 'FG'      
+           '20': 'AR',
+           '25': 'ON',
+           '30': 'DA',
+           '35': 'OA',           
+           'C': 'CC',
+           'F': 'FE', 
+           'G': 'MA',
+           'I': 'IN',
+           'L': 'CM',
+           'M': 'MG',
+           'O': 'OR',
+           'P': 'PR',
+           'R': 'RP',
+           'S': 'ST'
+           'T': 'TR',
+           'V': 'CV'
+           'W': 'SW'
+##RED## To be checked           
+           # 'A': 'A',
+           # 'B': 'B',
+           # 'D': 'D',
+           # 'E': 'E',
+           # 'H': 'H',
+           # 'J': 'J',
+           # 'K': 'K',
+           # 'N': 'N',
+           # 'Q': 'Q',
+           # 'U': 'U',
+           # 'X': 'X', 
+           # 'Y': 'Y',
+           # 'Z': 'Z'                  
+}
+print(f"D10E-01: {mapRelatedAccountIdForFirstAreaCode}")
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read   10I - PRINCIPAL PARTY RECORD, MISC. INFO SEGMENT lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D10I-01-DividendCode#
+mapDividendCode = {
+           '1': 'A',
+           '2': 'B',
+           '3': 'C',      
+           '4': 'D',
+           '5': 'E',
+           '6': 'F',
+           '7': 'G'          
+}
+print(f"D10I-01: {mapDividendCode}")
+
+#D10I-02-FeeChargeFrequencyCode#
+mapFeeChargeFrequencyCode = {
+           'A': '265',
+           'M': '30',
+           'Q': '90'      
+           'S': '180'         
+}
+print(f"D10I-02: {mapFeeChargeFrequencyCode}")
+
+#D10I-03-IraMaturePlanCode#
+mapIraMaturePlanCode = {
+           'A': 'PP',
+           'B': 'EP'  
+}
+print(f"D10I-03: {mapIraMaturePlanCode}")
+
+
+#D10I-04-RetirementPlanSubjectCode#
+mapRetirementPlanSubjectCode = {
+           'C': 'DP',
+           'D': 'DE'  
+}
+print(f"D10I-04: {mapRetirementPlanSubjectCode}")
+
+#D10I-05-RetirementPlanCode#
+mapRetirementPlanCode = {
+           '1': 'A',
+           '2': 'B',
+           '3': 'C',
+           '4': 'D',
+           '5': 'E',
+           '6': 'F',
+           '7': 'G',
+           '8': 'H',
+           '9': 'I'    
+}
+print(f"D10I-05: {mapRetirementPlanCode}")
+
+#D10I-06-RetirementPlanClintCode#
+mapRetirementPlanClintCode = {
+           'E': 'EE',
+           'F': 'ES',
+           'G': 'OK',
+           'H': 'MP',
+           'I': 'SI',
+           'J': 'PS',
+           'K': 'KN',
+           'L': 'KT',
+           'M': 'PE',
+           'N': 'DN',
+           'O': 'MA',
+           'P': 'PA',
+           'Q': 'SK',
+           'R': 'BI',
+           'S': 'BN',
+           'T': 'ST',
+           'U': 'OT',
+           'V': 'RI',
+           'W': '3B',
+           'X': 'B7', 
+           'Y': 'EP',
+           'Z': 'SE',
+           '0': 'ER'            
+}
+print(f"D10I-06: {mapRetirementPlanClintCode}")
+
+#D10I-07-UsaCanBrokerCode#
+mapUsaCanBrokerCode = {
+           'U': 'US',
+           'C': 'CA'
+}
+print(f"D10I-07: {mapUsaCanBrokerCode}")
+
+#D10I-08-MarginAccountInsuranceCode#
+mapMarginAccountInsuranceCode = {
+           '0': 'AN',
+           '1': 'P1',
+           '2': 'P2',
+           '3': 'F1',
+           '4': 'F2'
+}
+print(f"D10I-08: {mapMarginAccountInsuranceCode}")
+
+#D10I-09-InvoiceConfirmationsCode#
+mapInvoiceConfirmationsCode = {
+           'Y': '1',
+           'N': '0'
+}
+print(f"D10I-09: {mapInvoiceConfirmationsCode}")
+
+#D10I-10-JointAgreementCode#
+mapJointAgreementCode = {
+           '1': 'A',
+           '2': 'B',
+           '3': 'C',      
+           '4': 'D',
+           '5': 'E'
+}
+print(f"D10I-10: {mapJointAgreementCode}")
+
+#D10I-11-PrimaryPortfolioServiceCode#
+mapPrimaryPortfolioServiceCode = {
+           'A': '1',
+           'B': '2',
+           'C': '3',
+           'D': '4',
+           'E': '5',
+           'F': '6',
+           'H': '7',
+           'I': '8',
+           'M': '9',
+           'N': '10',
+           'P': '11',
+           'S': '12',
+           'V': '13',
+           'W': '14'
+##RED## To be checked           
+           # '0': '0',
+           # '1': '1',
+           # '2': '2',
+           # '3': '3',
+           # '4': '4',
+           # '5': '5',
+           # '6': '6',
+           # '7': '7',
+           # '8': '8',
+           # '9': '9'           
+}
+print(f"D10I-11: {mapPrimaryPortfolioServiceCode}")
+
+#D10I-12-CashAgreementCode#
+mapCashAgreementCode = {
+           'Y': '1',
+           'M': 'P',
+           'P': 'F'           
+}
+print(f"D10I-12: {mapCashAgreementCode}")
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read   10N - PRINCIPAL PARTY RECORD, FIXED FIELDS N&A SEGMENT lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D10N-01-10NNameCode1#
+map10NNameCode1 = {
+           'P': 'H',
+           'C': 'E'
+}
+print(f"D10N-01: {map10NNameCode1}")
+
+#D10N-01-10NNameCode2#
+map10ONameCode2 = {
+           'P': 'H',
+           'C': 'B'
+}
+print(f"D10N-01: {map10ONameCode2}")
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read   10O - PRINCIPAL PARTY RECORD, EMPLOYERS DATA SEGMENT lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D10O-01-10ONameCode#
+map10ONameCode = {
+           'P': 'H',
+           'C': 'B'
+}
+print(f"D10O-01: {map10ONameCode}")
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read    10P - PRINCIPAL PARTY RECORD, PERSONAL INFO SEGMENT lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D10P-01-MaritalStatusCode#
+mapMaritalStatusCode = {
+           'S': '1',
+           'M': '2',
+           'D': '3',
+           'W': '4',
+}
+print(f"D10P-01: {mapMaritalStatusCode}")
+
+#D10P-02-RentsOwnsCode#
+mapRentsOwnsCode = {
+           'O': 'B',
+           'R': 'L'
+}
+print(f"D10P-02: {mapRentsOwnsCode}")
+
+#D10P-03-CommoditiesFuturesAccountCode#
+mapCommoditiesFuturesAccountCode = {
+           'Y': '1'
+}
+print(f"D10P-03: {mapCommoditiesFuturesAccountCode}")
+
+#D10P-04-CommoditiesFuturesApprovalCode#
+mapCommoditiesFuturesApprovalCode = {
+           '1': 'A',
+           '2': 'B',
+           '3': 'C'
+           '4': 'D'
+}
+print(f"D10P-04: {mapCommoditiesFuturesApprovalCode}")
+
+#D10P-05-CreditCheckCode#
+mapCreditCheckCode = {
+           'N': '0',
+           'Y': '1'
+}
+print(f"D10P-05: {mapCreditCheckCode}")
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read  11A - COMPLIANCE RECORD, BASE SEGMENT lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D11A-01-SegmentIdOf1stSegmentCode#
+##Placeholder to be implemented
+##RED## to be checked
+# mapSegmentIdOf1stSegmentCode = {
+           # 'B': '',
+           # 'C': '',
+           # 'D': ''
+           # 'E': '',
+           # 'F': ''
+# }
+# print(f"D11A-01: {mapSegmentIdOf1stSegmentCode}")
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read     11B - COMPLIANCE RECORD, COMPLIANCE INFO SEGMENT lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D11B-01-mapTradingAuthorityOfFinancialInterestInAcctCode#
+mapTradingAuthorityOfFinancialInterestInAcctCode = {	
+           'F': 'A',
+           'L': 'S'
+}	
+print(f"D11B-01: {mapTradingAuthorityOfFinancialInterestInAcctCode}")	
+	
+mapSecuritiesRegisteredInAnotherNameCode = {	
+           'Y': '1',
+           'N': '0'
+}
+print(f"D11B-02: {mapSecuritiesRegisteredInAnotherNameCode}")	
+
+mapDividendPaymentsToAnotherCode = {	
+           'Y': '1',
+           'N': '0'
+}
+print(f"D11B-03: {mapDividendPaymentsToAnotherCode}")	
+
+mapUSAccountApprovalCodeCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D11B-04: {mapUSAccountApprovalCodeCode}")	
+	
+mapRrHasDirectInterestInAccountCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D11B-05: {mapRrHasDirectInterestInAccountCode}")		
+	
+mapInitialOrderBuySellCodeCode = {	
+           'B': '1',
+           'S': '0'
+}
+print(f"D11B-06: {mapInitialOrderBuySellCodeCode}")	
+
+mapInitialOrderSolicitedCode = {	
+           'Y': '1',
+           'N': '0'
+}
+print(f"D11B-07: {mapInitialOrderSolicitedCode}")		
+	
+mapTradeWithOtherBrokers-RegularCode = {	
+           'Y': '1',
+           'N': '0'
+}
+print(f"D11B-08: {mapTradeWithOtherBrokers}")	
+
+mapTradeWithOtherBrokersOptionsCode = {	
+           'Y': '1',
+           'N': '0'
+}
+print(f"D11B-09: {mapTradeWithOtherBrokersOptionsCode}")
+	
+mapTradeWithOtherBrokersCommodityFuturesCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D11B-10: {mapTradeWithOtherBrokersCommodityFuturesCode}")		
+	
+mapMetWithClientCode = {	
+           'Y': '1',
+           'N': '0'
+}
+print(f"D11B-11: {mapMetWithClientCode}")	
+
+mapMailForwardedCode = {	
+           'Y': '1'
+}	
+print(f"D11B-12: {mapMailForwardedCode}")		
+	
+mapBrokerEmployeeCode = {	
+           'H': '1',
+           'I': '2',
+           'R': '3',
+           'Y': '4'
+}
+print(f"D11B-13: {mapBrokerEmployeeCode}")	
+
+mapBdCdTradeOnBehalfOfOtherBrokersCode = {	
+           'Y': '1',
+           'N': '0'
+}
+print(f"D11B-14: {mapBdCdTradeOnBehalfOfOtherBrokersCode}")	
+
+mapOatsAccountTypeCode = {	
+           'P': '8',
+           'X': '9'
+}	
+print(f"D11B-15: {mapOatsAccountTypeCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read      11C - COMPLIANCE RECORD, PUBLIC COMPANIES SEGMENT   lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D11C-01-mapClientSpouseEmpDirOfStockExchangeIndCode#
+mapClientSpouseEmpDirOfStockExchangeIndCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D11C-01: {mapClientSpouseEmpDirOfStockExchangeIndCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       11D - COMPLIANCE RECORD, TEMPORARY ADDRESS SEGMENT   lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D11D-01-mapTempAddressAnnualCycleCode#
+mapTempAddressAnnualCycleCode = {	
+           'Y': '1'
+}	
+print(f"D11D-01: {mapTempAddressAnnualCycleCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       11E - COMPLIANCE RECORD, MANAGED ACCOUNT SEGMENT   lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D11E-01-mapDiscretionaryCode#
+mapDiscretionaryCode = {	
+           'Y': '1'
+}	
+print(f"D11E-01: {mapDiscretionaryCode}")	
+
+mapProxyCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-02: {mapProxyCode}")	
+                
+mapTaxCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-03: {mapTaxCode}")	
+
+mapRebalancingCodeCode = {	
+           'A1': 'M',
+           'A2': 'J',
+           'A3': 'S',
+           'A4': 'D',
+           'N': '0',
+           'Q': '4'
+}	
+print(f"D11E-04: {mapRebalancingCodeCode}")	
+
+mapMoneyManagerDtcConfirmCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-05: {mapMoneyManagerDtcConfirmCode}")	
+
+mapDailyClientConfirmCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-06: {mapDailyClientConfirmCode}")	
+
+mapMoneyManagerDuplicateConfirmCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-07: {mapMoneyManagerDuplicateConfirmCode}")
+	
+mapMoneyManagerDuplicateStatementCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-08: {mapMoneyManagerDuplicateStatementCode}")	
+
+mapAdviseWelcomeLetterCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-09: {mapAdviseWelcomeLetterCode}")	
+
+	
+mapOutsideCustodyCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D11E-10: {mapOutsideCustodyCode}")	
+
+mapBlockOrderCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-11: {mapBlockOrderCode}")	
+	
+	
+mapPreformanceReportingCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-12: {mapPreformanceReportingCode}")	
+	
+	
+mapMonthlyConfirmReportingCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-13: {mapMonthlyConfirmReportingCode}")	
+	
+	
+mapClientBillingCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-14: {mapClientBillingCode}")	
+	
+mapNNoFeeCode = {
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-01: {mapNNoFeeCode}")	
+
+mapManagedAcctCommissionCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-15: {mapManagedAcctCommissionCode}")	
+
+mapManagedAcctFixedRateCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-16: {mapManagedAcctFixedRateCode}")	
+
+mapPerformanceReportTypeCodeCode = {	
+           'C': '10',
+           'I': '11',
+           'L': '12',
+           'M': '13',
+           'N': '14',
+           'S': '15',
+           'T': '16'
+}	
+print(f"D11E-17: {mapPerformanceReportTypeCodeCode}")	
+
+mapRiskReturnAnalysisCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-18: {mapRiskReturnAnalysisCode}")	
+
+mapOpenHoldingsReportCodeCode = {	
+           'A': '20',
+           'N': '21',
+           'S': '22',
+           'Y': '23'
+}	
+print(f"D11E-19: {mapOpenHoldingsReportCodeCode}")	
+
+mapGainLossReportCodeCode = {	
+           'A': '30',
+           'N': '31',
+           'S': '32',
+           'Y': '33'
+}	
+print(f"D11E-20: {mapGainLossReportCodeCode}")	
+
+mapHardCopyDeliveryCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-21: {mapHardCopyDeliveryCode}")	
+	
+	
+mapAdvisoryProfileCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-22: {mapAdvisoryProfileCode}")	
+
+mapAdvisoryProfileTextCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-23: {mapAdvisoryProfileTextCode}")	
+
+mapManagedAcctSectorMaxCode = {	
+           'Y': '0',
+           'N': '1'
+}	
+print(f"D11E-24: {mapManagedAcctSectorMaxCode}")	
+
+mapManagedAcctMarginExceptionCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-25: {mapManagedAcctMarginExceptionCode}")	
+	
+mapManagedAcctNegAcExceptionCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-26: {mapManagedAcctNegAcExceptionCode}")	
+	
+mapManagedAcctNegSectorExceptionCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-27: {mapManagedAcctNegSectorExceptionCode}")	
+	
+mapManagedAcctMaxExposureCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-28: {mapManagedAcctMaxExposureCode}")	
+	
+mapManagedAcct105AssetClassCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-29: {mapManagedAcct105AssetClassCode}")	
+	
+mapManagedAcctMaxFeeExceptionCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-30: {mapManagedAcctMaxFeeExceptionCode}")	
+	
+mapManagedAcctCashExceptionCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"D11E-31: {mapManagedAcctCashExceptionCode}")	
+	
+mapManagedAcctRiskCodeCode = {	
+           'A': '40',
+           'B': '41',
+           'C': '42',
+           'D': '43',
+           'E': '44'
+}	
+print(f"D11E-32: {mapManagedAcctRiskCodeCode}")	
+
+mapManagedAplCode = {	
+           'A': '1'
+}	
+print(f"D11E-33: {mapManagedAplCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       11G - COMPLIANCE RECORD, FATCA AND CAT SEGMNET         lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D11G-01-mapFatcaFlowThruEntityCode#
+mapFatcaFlowThruEntityCode = {	
+           'NOQI': '1111',
+           'NWFP': '1112',
+           'NWFT': '1113',
+           'NWGT': '1114',
+           'NWST': '1115',
+           'WFPA': '1116',
+           'WFTR': '1117',
+           'YEQI': '1118'
+}	
+print(f"D11G-01: {mapFatcaFlowThruEntityCode}")		
+	
+mapFatcaWithholdCode = {	
+           'F': 'Y'
+}	
+print(f"D11G-02: {mapFatcaWithholdCode}")
+               
+mapFatcaCertificationStatusCode = {	
+           '01': 'UN',
+           '02': 'CP',
+           '03': 'CR',
+           '04': 'EX'
+}	
+print(f"D11G-03: {mapFatcaCertificationStatusCode}")
+               
+mapFatcaCertificationTypeCode = {	
+           '01': 'MN',
+           '02': 'EL',
+           '03': 'VI',
+           '04': 'ME',
+           '05': 'OT'
+}	
+print(f"D11G-04: {mapFatcaCertificationTypeCode}")
+               
+mapFatcaRenouncedUsCitzensipCode = {	
+           'Y': '1'
+}	
+print(f"D11G-05: {mapFatcaRenouncedUsCitzensipCode}")
+               
+mapCatCaisReportableCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D11G-06: {mapCatCaisReportableCode}")
+               
+mapCatPersonEntityCode = {	
+           'P': 'H',
+           'E': 'T'
+}	
+print(f"D11G-07: {mapCatPersonEntityCode}")
+               
+mapCatNameSuffixCode = {	
+           'FIFTH': '5',
+           'FOURTH': '4',
+           'JUNIOR': '3',
+           'SENIOR': '2',
+           'THIRD': '1'
+}	
+print(f"D11G-08: {mapCatNameSuffixCode}")
+               
+mapCatRoleCode = {	
+           'N': 'X',
+           'R': 'Y',
+           'T': 'Z',
+           '3': 'A'
+}	
+print(f"D11G-09: {mapCatRoleCode}")
+	
+mapCatReasonCodeCode = {	
+           'C': 'R',
+           'E': 'D',
+           'O': 'H',
+           'R': 'P',
+           'T': 'F'
+}	
+print(f"D11G-10: {mapCatReasonCodeCode}")
+	
+mapCatDiscretionCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D11G-11: {mapCatDiscretionCode}")
+	
+mapCatCustomerType3Code = {	
+           '0': 'J',
+           '1': 'L',
+           '2': 'K',
+           '3': 'M',
+           '4': 'N',
+           '5': 'O',
+           '6': 'P',
+           '7': 'Q',
+           '8': 'R',
+           '9': 'S'
+}	
+print(f"D11G-12: {mapCatCustomerType3Code}")
+	
+mapCatPersonEntityCode = {	
+           'P': 'H',
+           'E': 'T'
+}	
+print(f"D11G-13: {mapCatPersonEntityCode}")
+               
+mapCatNameSuffixCode = {	
+           'FIFTH': '5',
+           'FOURTH': '4',
+           'JUNIOR': '3',
+           'SENIOR': '2',
+           'THIRD': '1'
+}	
+print(f"D11G-14: {mapCatNameSuffixCode}")
+               
+mapCatRoleCode = {	
+           'N': 'X',
+           'R': 'Y',
+           'T': 'Z',
+           '3': 'A'
+}	
+print(f"D11G-15: {mapCatRoleCode}")
+               
+mapCatReasonCodeCode = {	
+           'C': 'R',
+           'E': 'D',
+           'O': 'H',
+           'R': 'P',
+           'T': 'F'
+}	
+print(f"D11G-16: {mapCatReasonCodeCode}")
+	
+mapCatDiscretionCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D11G-17: {mapCatDiscretionCode}")
+	
+mapCatCustomerTypeCode = {	
+           '0': 'J',
+           '1': 'L',
+           '2': 'K',
+           '3': 'M',
+           '4': 'N',
+           '5': 'O',
+           '6': 'P',
+           '7': 'Q'
+}	
+print(f"D11G-18: {mapCatCustomerTypeCode}")
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       INTERESTED PARTY RECORD  -  BASE SEGMENT 20 00   lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#DIPRBS2000-01-mapSegmentIdOf1StSegmentCode#
+mapSegmentIdOf1StSegmentCode = {	
+           '01': 'AA1',
+           '02': 'AA2',
+           '03': 'AA3',
+           '04': 'AA4',
+           '05': 'AA5',
+           '06': 'AA6',
+           '07': 'AA7',
+           '08': 'AA8',
+           '09': 'AA9',
+           '10': 'AA10',
+           '11': 'AA11',
+           '12': 'AA12',
+           '13': 'AA13',
+           '14': 'AA14',
+           '15': 'AA15'
+}	
+print(f"DIPRBS2000-01: {mapSegmentIdOf1StSegmentCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read      INTERESTED PARTY RECORD - I/P SEGMENTS 01 - 09   lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#DIPRIS0109-01-mapNumberOfStatementsCode#
+mapNumberOfStatementsCode = {	
+           '6': 'AA#6',
+           '7': 'AA#7',
+           '8': 'AA#8',
+           '9': 'AA#9'
+}	
+print(f"DIPRIS0109-01: {mapNumberOfStatementsCode}")	
+
+mapAlternateTransfersCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"DIPRIS0109-02: {mapAlternateTransfersCode}")	
+
+mapAlternateProxiesCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"DIPRIS0109-03: {mapAlternateProxiesCode}")	
+
+mapAltIncomeChecksCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"DIPRIS0109-04: {mapAltIncomeChecksCode}")	
+
+mapOnlineCheckwritingCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"DIPRIS0109-05: {mapOnlineCheckwritingCode}")	
+
+mapIdSystemCode = {	
+           'N': '0',
+           'Y': '1'
+}	
+print(f"DIPRIS0109-06: {mapIdSystemCode}")	
+
+mapCodCode = {	
+           'N': '',
+           'Y': '0'
+}	
+print(f"DIPRIS0109-07: {mapCodCode}")	
+
+mapCorCode = {	
+           'N': '',
+           'Y': '0'
+print(f"DIPRIS0109-08: {mapCorCode}")	
+	
+map1099Code = {
+           'Y': '1'
+}	
+print(f"DIPRIS0109-09: {map1099Code}")                
+	
+mapIpBypassZipProcessingCode = {
+           'Y': '1'
+}	
+print(f"DIPRIS0109-10: {mapIpBypassZipProcessingCode}")		
+	
+mapIPElectronicConfirmIndCode = {	
+           'B': 'AAB',
+           'E': 'AAE',
+           'F': 'AAF',
+           'V': 'AAZ'
+}	
+print(f"DIPRIS0109-11: {mapIPElectronicConfirmIndCode}")	
+
+mapIPElectronicStatementIndCode = {	
+           'B': 'AAB',
+           'E': 'AAE',
+           'F': 'AAF',
+           'V': 'AAZ'
+}	
+print(f"DIPRIS0109-12: {mapIPElectronicStatementIndCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       INTERESTED PARTY FIXED-FIELDS RECORD - BASE SEGMENT 2100      lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#DIPFFRBS2100-01-mapSegmentIdOf1StSegmentCode#
+mapSegmentIdOf1StSegmentCode = {	
+           '01': 'AA1',
+           '02': 'AA2',
+           '03': 'AA3',
+           '04': 'AA4',
+           '05': 'AA5',
+           '06': 'AA6',
+           '07': 'AA7',
+           '08': 'AA8',
+           '09': 'AA9',
+           '10': 'AA10',
+           '11': 'AA11',
+           '12': 'AA12',
+           '13': 'AA13',
+           '14': 'AA14',
+           '15': 'AA15'
+}	
+print(f"DIPFFRBS2100-01: {mapSegmentIdOf1StSegmentCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read        INTERESTED PARTY FIXED-FIELDS RECORD - I/P SEGMENTS 01-09    lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#DIPFFRIS0109-01-mapBasCodeCode#
+mapBasCodeCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"DIPFFRIS0109-01: {mapBasCodeCode}")		
+	
+mapNameCode = {	
+           'P': 'H',
+           'C': 'B'
+}	
+print(f"DIPFFRIS0109-02: {mapNameCode}")		
+	
+mapTelexFaxSwiftIndicatorCode = {	
+           'A': '1',
+           'B': '2',
+           'C': '3',
+           'E': '4',
+           'F': '5',
+           'M': '6',
+           'S': '7',
+           'T': '8'
+}	
+print(f"DIPFFRIS0109-03: {mapTelexFaxSwiftIndicatorCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       30A - PROVIDENT BANK ACM RECORD, BASE SEGMENT   lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D30A-01-mapReasonAccountWasClosedCode#
+mapReasonAccountWasClosedCode = {	
+           '3': 'L',
+           '6': 'M',
+           '8': 'N',
+           '9': 'O'
+}	
+print(f"D30A-01: {mapReasonAccountWasClosedCode}")	
+
+mapReinstatementCodeCode = {	
+           'Y': '1',
+           'N': '0',
+                ' ': '0'
+}	
+print(f"D30A-02: {mapReinstatementCodeCode}")	
+
+mapProvBankAccountTypeCode = {	
+           '1': 'I',
+           '2': 'J',
+           '3': 'T',
+           '4': 'P',
+           '5': 'S',
+           '6': 'C',
+           '9': 'X'
+}	
+print(f"D30A-03: {mapProvBankAccountTypeCode}")	
+	
+mapCheckStyleCodeCode = {	
+           '1': 'S',
+           '2': 'D'
+}	
+print(f"D30A-04: {mapCheckStyleCodeCode}")	
+
+mapMultiSignersCodeCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D30A-05: {mapMultiSignersCodeCode}")	
+
+mapCheckCoverCodeCode = {	
+           '0': 'N',
+           '1': 'S'
+}	
+print(f"D30A-06: {mapCheckCoverCodeCode}")	
+
+mapClientAddressOnChecksCodeCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D30A-07: {mapClientAddressOnChecksCodeCode}")			
+	
+mapForeignAccountIdCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D30A-08: {mapForeignAccountIdCode}")		
+	
+mapWaiveFeeCode = {	
+           'N': '0'
+}	
+print(f"D30A-09: {mapWaiveFeeCode}")	
+
+mapUseReducedB1FeeCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D30A-10: {mapUseReducedB1FeeCode}")	
+
+mapName1Code = {	
+           'P': 'H',
+           'C': 'B'
+}	
+print(f"D30A-11: {mapName1Code}")		
+	
+mapName2Code = {	
+           'P': 'H',
+           'C': 'B'
+}	
+print(f"D30A-12: {mapName2Code}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       30B - PROVIDENT BANK ACM RECORD, FIXED N/A FIELDS               lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D30B-01-mapNameCode#
+mapNameCode = {	
+           'P': 'H',
+           'C': 'B'
+}	
+print(f"D30B-01: {mapNameCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       30C - PROVIDENT BANK ACM RECORD, DEBIT SEGMENT       lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D30C-01-mapCheckingAccountStatusCode#
+mapCheckingAccountStatusCode = {	
+           'A': 'A',
+           'P': 'P',
+           'C': 'C',
+           'T': 'T'
+}	
+print(f"D30C-01: {mapCheckingAccountStatusCode}")
+                
+mapDebitAccountStatusCode = {	
+           'A': 'A',
+           'P': 'P',
+           'C': 'C',
+           'T': 'T'
+}	
+print(f"D30C-02: {mapDebitAccountStatusCode}")
+	
+mapSendToFiservCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D30C-03: {mapSendToFiservCode}")
+	
+mapSendToEdsCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D30C-04: {mapSendToEdsCode}")
+                
+mapPncCardTypeCode = {	
+           '0': 'CC',
+           '1': 'GC',
+           '2': 'PC',
+           '3': 'PP'
+}	
+print(f"D30C-05: {mapPncCardTypeCode}")
+                
+mapChkbookCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D30C-06: {mapChkbookCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       35A - AAA RECORD, GENERAL INFO SEGMENT              lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D35A-01-mapAaaAccountStatusCode#
+mapAaaAccountStatusCode = {	
+           'O': 'Y',
+           'C': 'N'
+}	
+print(f"D35A-01: {mapAaaAccountStatusCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       35B - AAA RECORD, CARD INFO SEGMENT              lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D35B-01-mapCardTypeCodeCode#
+mapCardTypeCodeCode = {	
+##RED##
+##To be implemented##	
+}	
+print(f"D35B-01: {mapCardTypeCodeCode}")		
+	
+mapPaymentCodeForMonthyTransactionsCode = {	
+           'M': 'L',
+           'F': 'A'
+}	
+print(f"D35B-02: {mapPaymentCodeForMonthyTransactionsCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       35C - AAA RECORD, CHECK INFO SEGMENT                lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D35C-01-mapCanadianCheckingAccountStatusCode#
+mapCanadianCheckingAccountStatusCode = {	
+           'O': 'Y',
+           'C': 'N'
+}	
+print(f"D35C-01: {mapCanadianCheckingAccountStatusCode}")	
+
+mapPrevCanCheckingAcctNumberManualOverrideCode = {	
+           'M': 'U'
+}	
+print(f"D35C-02: {mapPrevCanCheckingAcctNumberManualOverrideCode}")	
+
+map2NdPreviousCanCheckingAccountNumberCode = {	
+           'M': 'U'
+}	
+print(f"D35C-03: {map2NdPreviousCanCheckingAccountNumberCode}")		
+	
+mapCanadianCheckTypeCode = {	
+           'B': 'C',
+           'P': 'H'
+}	
+print(f"D35C-04: {mapCanadianCheckTypeCode}")	
+
+mapCanadianCheckLanguageCodeCode = {	
+           'E': 'E',
+           'F': 'F'
+}	
+print(f"D35C-05: {mapCanadianCheckLanguageCodeCode}")	
+
+mapCanadianCheckFundCodeCode = {	
+##RED##
+##To check##
+           'C': 'ISO Currency',
+           'U': 'ISO Currency'
+}	
+print(f"D35C-06: {mapCanadianCheckFundCodeCode}")	
+
+mapCanadianCheckActionCode = {	
+           'C': '5',
+           'M': '6',
+           'O': '7',
+           'R': '8'
+}	
+print(f"D35C-07: {mapCanadianCheckActionCode}")	
+	
+mapUsCheckingInformationCode = {	
+           'O': 'N',
+           'C': 'S'
+}	
+print(f"D35C-08: {mapUsCheckingInformationCode}")	
+
+mapUsCheckingAcctNumberManualOverrideCodeCode = {	
+           'M': 'U'
+}	
+print(f"D35C-09: {mapUsCheckingAcctNumberManualOverrideCodeCode}")	
+
+mapPrevUsCheckingAcctNumberManualOverrideCode = {	
+           'M': 'U'
+}	
+print(f"D35C-10: {mapPrevUsCheckingAcctNumberManualOverrideCode}")	
+
+	
+map2NdPrevUsCheckingAcctNumberManualCode = {	
+           'M': 'U'
+}	
+print(f"D35C-11: {map2NdPrevUsCheckingAcctNumberManualCode}")	
+	
+mapUsCheckTypeCode = {	
+           'B': 'C',
+           'P': 'H'
+}	
+print(f"D35C-12: {mapUsCheckTypeCode}")	
+
+mapUsCheckLanguageCodeCode = {	
+           'E': 'E',
+           'F': 'F'
+}	
+print(f"D35C-13: {mapUsCheckLanguageCodeCode}")	
+
+mapUsCheckFundCodeCode = {	
+##RED##
+##To check##
+           'C': 'ISO Currency',
+           'U': 'ISO Currency'
+}	
+print(f"D35C-14: {mapUsCheckFundCodeCode}")	
+
+mapUsCheckActionCode = {	
+           'C': '5',
+           'M': '6',
+           'O': '7',
+           'R': '8'
+}	
+print(f"D35C-15: {mapUsCheckActionCode}")	
+	
+mapCheckFeeTypeCode = {	
+           'C': 'C',
+           'W': 'G'
+}	
+print(f"D35C-16: {mapCheckFeeTypeCode}")	
+
+mapShipToCodeCode = {	
+           'C': 'C',
+           'O': 'G'
+}	
+print(f"D35C-17: {mapShipToCodeCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       35D - UCI RECORD                    lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D35D#
+#Same as 30B#
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read        40A - AMERICAN EXPRESS ACM RECORD          lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D40A-01-mapSuspendCodeCode#
+mapSuspendCodeCode = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D40A-01: {mapSuspendCodeCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read        45A - CUSTOMER AND ACCOUNT(CAT) INFORMATION   lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D45A-01-mapTradingAuthorityOfFinancialInterestInAcctCode#
+mapCatPersonEntityCode = {	
+            'C': 'B',
+            'P': 'H'
+}	
+print(f"D45A-01: {mapCatPersonEntityCode}")		
+	
+mapCatNameSuffixCode = {	
+            'FIFTH': '5',
+            'FOURTH': '4',
+            'JUNIOR': '3',
+            'SENIOR': '2',
+            'THIRD': '1'
+}	
+print(f"D45A-02: {mapCatNameSuffixCode}")	
+	
+mapCatRoleCode = {	
+            'N': 'X',
+            'R': 'Y',
+            'T': 'Z',
+            '3': 'A',
+}	
+print(f"D45A-03: {mapCatRoleCode}")		
+	
+mapCatReasonCodeCode = {	
+            'C': 'R',
+            'E': 'D',
+            'O': 'H',
+            'R': 'P',
+            'T': 'F',
+}	
+print(f"D45A-04: {mapCatReasonCodeCode}")	
+	
+mapCatDiscretionCode = {	
+            'Y': '1',
+            'N': '0'
+            ' ': '0'
+}	
+print(f"D45A-05: {mapCatDiscretionCode}")		
+	
+mapCatCustomerTypeCode = {	
+            '0': 'J',
+            '1': 'L',
+            '2': 'K',
+            '3': 'M',
+            '4': 'N',
+            '5': 'O',
+            '6': 'P',
+            '7': 'Q'
+}	
+print(f"D45A-06: {mapCatCustomerTypeCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       51A - PP EXTENSION RECORD, BASE SEGMENT A       lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D51A-01-mapTelexFaxIndCode#
+mapTelexFaxIndCode = {	
+            'A': '1',
+            'B': '2',
+            'E': '4',
+            'F': '5',
+            'M': '6',
+            'T': '8'
+}	
+print(f"D51A-01: {mapTelexFaxIndCode}")		
+	
+mapExecutiveOrPrimeBrokerCode = {
+##RED##	
+             ## To be Implemented based on input
+            'E': 'EP',
+            'P': 'PB'
+}	
+print(f"D51A-02: {mapExecutiveOrPrimeBrokerCode}")
+	
+mapAchEntitlementFieldCode = {	
+            '1': 'O',
+            '2': 'R',
+            '3': 'B',
+            '4': 'D',
+            '5': 'I'
+}	
+print(f"D51A-03: {mapAchEntitlementFieldCode}")
+
+mapCustodialFlipCode = {	
+            'Y': '1'
+}	
+print(f"D51A-04: {mapCustodialFlipCode}")		
+	
+mapRioCode = {	
+            'Y': '1',
+            'N': '0'
+}	
+print(f"D51A-05: {mapRioCode}")	
+	
+mapProxyMailCodeCode = {	
+            '1': 'M',
+            '2': 'S'
+}	
+print(f"D51A-06: {mapProxyMailCodeCode}")
+
+mapMsrbCustomerTransactionReportingCode = {	
+            'Y': '1',
+            'N': '0'
+}	
+print(f"D51A-07: {mapMsrbCustomerTransactionReportingCode}")
+
+mapTaxlotMutuallyExclusiveWithPsrCode = {	
+            'Y': '1'
+}	
+print(f"D51A-08: {mapTaxlotMutuallyExclusiveWithPsrCode}")
+
+mapDdaDemandDepositAccountAch4Code = {	
+            '1': 'I',
+            '2': 'R',
+            '3': 'D',
+            '6': 'P'
+}	
+print(f"D51A-09: {mapDdaDemandDepositAccountAch4Code}")	
+	
+mapFundsInAdvanceCode = {	
+            'Y': '1'
+}	
+print(f"D51A-10: {mapFundsInAdvanceCode}")
+
+mapAveragePriceCompressionCode = {	
+            'S': 'H'
+}	
+print(f"D51A-11: {mapAveragePriceCompressionCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       51B - PP EXTENSION RECORD, SEGMENT B                           lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D51B-01-mapInaPendingFlagCode#
+mapInaPendingFlagCode = {	
+             'Y': '1'
+}	
+print(f"D51B-01: {mapInaPendingFlagCode}")
+
+mapInaRejectFlagCode = {	
+             'Y': '1'
+}	
+print(f"D51B-02: {mapInaRejectFlagCode}")
+	
+##mapSsTaxidCodeForAboveCode = {	
+##RED## TO Check
+#             '0': '',
+#             '1': '',
+#             '2': '',
+#             '3': '',
+#             '4': ''
+##}	
+##print(f"D51B-03: {mapSsTaxidCodeForAboveCode}")
+	
+mapSsTaxidCodeForAboveCode = {	
+             '0': 'UN',
+             '1': 'SS',
+             '2': 'TX',
+             '3': 'SN',
+             '4': 'II'
+}	
+print(f"D51B-04: {mapSsTaxidCodeForAboveCode}")
+                
+mapInaAccountCode = {	
+             'Y': '1',
+}	
+print(f"D51B-05: {mapInaAccountCode}")	
+
+mapFeeFrequency1Code = {	
+             'M': '030',
+             'Q': '090',
+             'S': '180',
+             'A': '365',
+             'D': '001'
+}	
+print(f"D51B-06: {mapFeeFrequency1Code}")	
+	
+mapStatementFrequencyCode = {	
+             'M': '12',
+             'Q': '04',
+             'S': '02',
+             'A': '01'
+}	
+print(f"D51B-07: {mapStatementFrequencyCode}")	
+	
+mapFeeFrequency2Code = {	
+             'M': '12',
+             'Q': '04',
+             'S': '02',
+             'A': '01'
+	
+}	
+print(f"D51B-08: {mapFeeFrequency2Code}")	
+
+mapEmployerCode = {	
+             'Y': '1'
+}	
+print(f"D51B-09: {mapEmployerCode}")	
+
+mapAlertAlphKeyCode = {	
+             '1': 'B',
+             '2': 'A'
+}	
+print(f"D51B-10: {mapAlertAlphKeyCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       51C - PP EXTENSION RECORD, BANKING INFO SEGMENT    lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D51C-01-mapWaiveFeeCode#
+mapWaiveFeeCode = {	
+             'Y': '1',
+             'I': '0'
+}	
+print(f"D51C-01: {mapWaiveFeeCode}")
+
+mapReducedB1FeeCode = {	
+             'Y': '1'
+}	
+print(f"D51C-02: {mapReducedB1FeeCode}")	
+	
+mapCheckingAccountStatusCode = {	
+             'O': '1',
+             'C': '0'
+}	
+print(f"D51C-03: {mapCheckingAccountStatusCode}")	
+	
+mapOwnershipCodeCode = {	
+             '1': 'I',
+             '2': 'J',
+             '3': 'T',
+             '4': 'P',
+             '5': 'S',
+             '6': 'B'
+}	
+print(f"D51C-04: {mapOwnershipCodeCode}")
+
+mapReasonCheckingAccountWasClosedCode = {	
+             '3': 'R',
+             '6': 'D',
+             '8': 'C',
+             '9': 'B'
+}	
+print(f"D51C-05: {mapReasonCheckingAccountWasClosedCode}")
+
+mapForeignAccountCode = {	
+             'Y': '1',
+             'N': '0'
+}	
+print(f"D51C-06: {mapForeignAccountCode}")	
+	
+mapCheckStyleCodeCode = {	
+             '1': 'S',
+             'S': '1'
+}	
+print(f"D51C-07: {mapCheckStyleCodeCode}")
+
+mapMultiSignersCodeCode = {	
+             'Y': '1',
+             'N': '0'
+}	
+print(f"D51C-08: {mapMultiSignersCodeCode}")
+
+mapCheckCoverCodeCode = {	
+             '0': 'N',
+             '1': 'S',
+             '2': 'D'
+}	
+print(f"D51C-09: {mapCheckCoverCodeCode}")
+
+mapClientAddressOnChecksCodeCode = {	
+             'Y': '1',
+             'N': '0'
+}	
+print(f"D51C-10: {mapClientAddressOnChecksCodeCode}")
+
+mapSignatureValidationCode = {	
+             'Y': '1'
+}	
+print(f"D51C-11: {mapSignatureValidationCode}")	
+	
+mapBankCardTypeCode = {	
+             'V': 'C',
+             'M': 'B'
+}	
+print(f"D51C-12: {mapBankCardTypeCode}")
+
+mapBankCardDebit/CreditCodeCode = {	
+             'D': 'N',
+             'C': 'I'
+}	
+print(f"D51C-13: {mapBankCardDebit}")
+
+mapBankCardStatusCode = {	
+             'O': '1',
+             'C': '0'
+}	
+print(f"D51C-14: {mapBankCardStatusCode}")	
+
+mapReasonBankCardAccountWasClosedCode = {	
+             '3': 'R',
+             '6': 'D',
+             '8': 'C',
+             '9': 'V'
+}	
+print(f"D51C-15: {mapReasonBankCardAccountWasClosedCode}")	
+	
+mapPostingCodeCode = {	
+             'D': 'X',
+             'M': 'Y'
+}	
+print(f"D51C-16: {mapPostingCodeCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read       51D - PP EXTENSION RECORD, SEGMENT D         lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D51D-01-mapCanadianInbndEftDCode#
+mapCanadianInbndEftDCode = {	
+           'Y': '1'
+}	
+print(f"D51D-01: {mapCanadianInbndEftDCode}")	
+
+mapCanadianInbndEftAcctTypeDCode = {	
+           '1': 'C',
+           '2': 'M'
+}	
+print(f"D51D-02: {mapCanadianInbndEftAcctTypeDCode}")		
+	
+mapCanadianInbndEftFrequencyDCode = {	
+           'A': 'CEF01',
+           'B1': 'CEF02',
+           'B2': 'CEF03',
+           'B3': 'CEF04',
+           'B4': 'CEF05',
+           'B5': 'CEF06',
+           'C1': 'CEF07',
+           'C2': 'CEF08',
+           'C3': 'CEF09',
+           'C4': 'CEF10',
+           'C5': 'CEF11',
+           'M': 'CEF12',
+           'Q': 'CEF13',
+           'S': 'CEF14',
+           'SA': 'CEF15',
+           'W1': 'CEF16',
+           'W2': 'CEF17',
+           'W3': 'CEF18',
+           'W4': 'CEF19',
+           'W5': 'CEF20'
+}	
+print(f"D51D-03: {mapCanadianInbndEftFrequencyDCode}")		
+	
+	
+mapEmailTypeCodeCode = {	
+           'B': 'C',
+           'H': 'T',
+           'O': 'G'
+}	
+print(f"D51D-04: {mapEmailTypeCodeCode}")		
+	
+	
+mapHouseholdingExemptCode = {	
+           'Y': '1'
+}	
+print(f"D51D-05: {mapHouseholdingExemptCode}")	
+
+mapClientHouseholdCodeCode = {	
+           'F': 'F',
+           'I': 'I',
+           'Q': 'Q',
+           'K': 'K',
+           'P': 'P',
+           'B': 'A'
+}	
+print(f"D51D-06: {mapClientHouseholdCodeCode}")		
+	
+mapPPElectronicConfirmIndCode = {	
+           'B': '1',
+           'E': '2',
+           'F': '3',
+           'V': '4'
+}	
+print(f"D51D-07: {mapPPElectronicConfirmIndCode}")	
+
+mapPPElectronicStatementIndCode = {	
+           'B': '1',
+           'E': '2',
+           'F': '3',
+           'V': '4'
+}	
+print(f"D51D-08: {mapPPElectronicStatementIndCode}")	
+
+mapCreditCheckStatusCode = {	
+           'A': '1',
+           'P': '2',
+           'R': '3',
+           'T': '4',
+           'B': '5',
+           'C': '6'
+}	
+print(f"D51D-09: {mapCreditCheckStatusCode}")	
+
+	
+mapUsaTaxWithholdingSubCodeCode = {	
+           'B': '1',
+           'C': '2',
+           'E': '3',
+           'F': '4',
+           'G': '5',
+           'I': '6',
+           'Q': '7',
+           'S': '8',
+           'T': '9'
+}	
+print(f"D51D-10: {mapUsaTaxWithholdingSubCodeCode}")	
+
+mapW8TypeSPrimaryHolderCode = {	
+           'B': '1',
+           'C': '2',
+           'D': '3',
+           'E': '4',
+           'N': '5',
+           'Q': '6',
+           'U': '7',
+           'W': '8'
+}	
+print(f"D51D-11: {mapW8TypeSPrimaryHolderCode}")		
+	
+mapW8TypeLJointHolderCode = {	
+           'B': '1',
+           'C': '2',
+           'D': '3',
+           'E': '4',
+           'N': '5',
+           'Q': '6',
+           'U': '7',
+           'W': '8'
+}	
+print(f"D51D-12: {mapW8TypeLJointHolderCode}")		
+	
+mapElectronicProspectusCode = {	
+           'B': '1',
+           'E': '2',
+           'F': '3',
+           'V': '4'
+}	
+print(f"D51D-13: {mapElectronicProspectusCode}")	
+
+mapInboundEftAmountOverrideCode = {	
+           'Y': '1'
+
+}	
+print(f"D51D-14: {mapInboundEftAmountOverrideCode}")	
+
+
+mapEquityCommissionOverrideCode = {	
+           'E': '1'
+}	
+print(f"D51D-15: {mapEquityCommissionOverrideCode}")	
+
+
+mapTaxLotAccountMethodCode = {	
+           'F': 'FIFOA',
+           'M': 'FIFOF'
+}	
+print(f"D51D-16: {mapTaxLotAccountMethodCode}")	
+
+	
+mapTaxLotExemptStatusCode = {	
+           'Y': '1'
+}	
+print(f"D51D-17: {mapTaxLotExemptStatusCode}")	
+
+
+mapTaxLotConversionOptionCode = {	
+           'S': 'SR',
+           'A': 'AM',
+           'N': 'NA',
+           'X': 'AC'
+}	
+print(f"D51D-18: {mapTaxLotConversionOptionCode}")	
+
+mapTaxLotStatementOptionCode = {	
+           'A': 'TLA',
+           'T': 'TTX'
+}	
+print(f"D51D-19: {mapTaxLotStatementOptionCode}")	
+
+mapTaxLotReinvestmentOptionCode = {	
+           'A': 'TLA',
+           'C': 'TTX'
+}	
+print(f"D51D-20: {mapTaxLotReinvestmentOptionCode}")	
+
+mapDayTradingCode = {	
+           'E': 'N',
+           'I': 'Y',
+           'Y': '1'
+}	
+print(f"D51D-21: {mapDayTradingCode}")	
+
+mapSummaryConfirmCode = {	
+           'Y': '1',
+           'N': '0',
+           'BLANK': '?',
+}	
+print(f"D51D-22: {mapSummaryConfirmCode}")		
+
+mapExpandedTaxIdNumberCodesCode = {	
+           '0': 'A',
+           '1': 'B',
+           '2': 'C',
+           '3': 'D',
+           '4': 'E',
+           '5': 'F',
+           '6': 'G',
+           'T': '8',
+           'U': '9'
+}	
+print(f"D51D-23: {mapExpandedTaxIdNumberCodesCode}")		
+
+mapMarketTimerCode = {	
+           'Y': '1'
+}	
+print(f"D51D-24: {mapMarketTimerCode}")	
+
+mapElectronicProxyCode = {	
+           'E': '1'
+}	
+print(f"D51D-25: {mapElectronicProxyCode}")	
+
+##RED##
+mapElectronic1099Code = {	
+           'B': '',
+           'E': '',
+           'F': '',
+           'V': ''
+}	
+print(f"D51D-26: {mapElectronic1099Code}")	
+
+mapCostConsentCode = {	
+           'Y': '1'
+
+}	
+print(f"D51D-27: {mapCostConsentCode}")	
+
+mapAlternative1099Code = {	
+           'Y': '1'
+}	
+print(f"D51D-28: {mapAlternative1099Code}")	
+
+mapAnnualB228TdStatementCode = {	
+           'A': '1',
+           'B': '5',
+           'M': '12',
+           'Q': '4'
+}	
+print(f"D51D-29: {mapAnnualB228TdStatementCode}")	
+
+mapBNoticeOverrideCode = {	
+           'Y': '1'
+}	
+print(f"D51D-30: {mapBNoticeOverrideCode}")	
+
+mapTaxlotOutsideHoldingsOnStatementCode = {	
+           'Y': '1'
+}	
+print(f"D51D-31: {mapTaxlotOutsideHoldingsOnStatementCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # Read      1 51E - PP EXTENSION RECORD, SEGMENT E   lookup table
+# #---------------------------------------------------------------------------------------------------------------------
+#D51E-01-mapTradingAuthorityOfFinancialInterestInAcctCode#
+mapSingleStockFuturesSsfCode = {	
+           'Y': '1'
+}	
+print(f"D51E-01: {mapSingleStockFuturesSsfCode}")
+	
+mapSsfPurchasesCode = {	
+           'Y': '1'
+}	
+print(f"D51E-02: {mapSsfPurchasesCode}")
+	
+mapSsfCoveredWritingCode = {	
+           'Y': '1'
+}	
+print(f"D51E-03: {mapSsfCoveredWritingCode}")
+	
+mapSsfNakedWritingCode = {	
+           'Y': '1'
+}	
+print(f"D51E-04: {mapSsfNakedWritingCode}")
+	
+mapOptionalDividendInstructionCodeCode = {	
+           'C': 'M',
+           'S': 'B'
+}	
+print(f"D51E-05: {mapOptionalDividendInstructionCodeCode}")
+	
+mapAccountClassCodeForStockRecordsCode = {	
+           'BRK': '000',
+           'CSS': '001',
+           'CUF': '002',
+           'DIV': '003',
+           'DTF': '004',
+           'FAL': '005',
+           'FRM': '006',
+           'FTF': '007',
+           'NCU': '008',
+           'PAI': '009',
+           'SPE': '010',
+           'SUS': '011'
+}	
+print(f"D51E-06: {mapAccountClassCodeForStockRecordsCode}")
+	
+mapReportUncoverBasisCode = {	
+           'Y': '1'
+}	
+print(f"D51E-07: {mapReportUncoverBasisCode}")
+	
+	
+mapStateWithholdingExemptionCode = {	
+           'Y': '1'
+}	
+print(f"D51E-08: {mapStateWithholdingExemptionCode}")
+	
+	
+mapFractionalSharesLiquidationCode = {	
+           'Y': '1'
+}	
+print(f"D51E-09: {mapFractionalSharesLiquidationCode}")	
+	
+mapFederalAccountCodeCode = {	
+           'Y': '1'
+}	
+print(f"D51E-10: {mapFederalAccountCodeCode}")
+	
+mapAccountOfacStatusCode = {	
+           'A': 'E',
+           'B': 'F',
+           'C': '0'	
+}	
+print(f"D51E-11: {mapAccountOfacStatusCode}")	
+	
+mapSuppressNextVerificationDateCode = {	
+           'Y': '1'
+}	
+print(f"D51E-12: {mapSuppressNextVerificationDateCode}")
+	
+mapCanadianBankInbndECode = {	
+           'Y': '1'
+}	
+print(f"D51E-13: {mapCanadianBankInbndECode}")
+	
+mapCanadianBankInbndACECode = {	
+           '1': 'C',
+           '2': 'M'
+}	
+print(f"D51E-14: {mapCanadianBankInbndACECode}")
+	
+mapCanadianBankInbndFCode = {	
+           'Y': '1'
+}	
+print(f"D51E-15: {mapCanadianBankInbndFCode}")
+	
+
+mapCanadianBankInbndACFCode = {	
+           '1': 'C',
+           '2': 'M'
+}	
+print(f"D51E-16: {mapCanadianBankInbndACFCode}")
+	
+mapUSBankInbndKCode = {	
+           'Y': '1'
+}	
+print(f"D51E-17: {mapUSBankInbndKCode}")
+	
+mapUSBankInbndACKCode = {	
+           '1': 'C',
+           '2': 'M'
+}	
+print(f"D51E-18: {mapUSBankInbndACKCode}")
+	
+mapUSBankInbndLCode = {	
+           'Y': '1'
+}	
+print(f"D51E-19: {mapUSBankInbndLCode}")
+	
+
+mapUSBankInbndACLCode = {	
+           '1': 'C',
+           '2': 'M'
+}	
+print(f"D51E-20: {mapUSBankInbndACLCode}")
+	
+mapUSBankInbndMCode = {	
+           'Y': '1'
+}	
+print(f"D51E-21: {mapUSBankInbndMCode}")
+	
+
+mapUSBankInbndACMCode = {	
+           '1': 'C',
+           '2': 'M'
+}	
+print(f"D51E-22: {mapUSBankInbndACMCode}")
+	
+mapFeeFrequency3Code = {	
+           'A': '365',
+           'D': '1',
+           'M': '30',
+           'Q': '90',
+           'S': '180'
+}	
+print(f"D51E-23: {mapFeeFrequency3Code}")
+	
+mapFeeFinalTier3Code = {	
+           'Y': '1'
+}	
+print(f"D51E-24: {mapFeeFinalTier3Code}")
+	
+mapFeeCashCalc3Code = {	
+           'Y': '1',
+           'N': '0'
+}	
+print(f"D51E-25: {mapFeeCashCalc3Code}")
+	
+mapFeeCoTrustee3Code = {	
+           'Y': '1'
+}	
+print(f"D51E-26: {mapFeeCoTrustee3Code}")	
+
+mapEftDepositACode = {	
+           'Y': '1'
+}	
+print(f"D51E-27: {mapEftDepositACode}")	
+
+mapEftDepositBCode = {	
+           'Y': '1'
+}	
+print(f"D51E-28: {mapEftDepositBCode}")	
+
+mapEftDepositCCode = {	
+           'Y': '1'
+}	
+print(f"D51E-29: {mapEftDepositCCode}")	
+
+mapEftDepositDCode = {	
+           'Y': '1'
+}	
+print(f"D51E-30: {mapEftDepositDCode}")	
+
+mapEftDepositECode = {	
+           'Y': '1'
+}	
+print(f"D51E-31: {mapEftDepositECode}")	
+
+mapEftDepositFCode = {	
+           'Y': '1'
+}	
+print(f"D51E-32: {mapEftDepositFCode}")	
+
+mapEftDepositGCode = {	
+           'Y': '1'
+}	
+print(f"D51E-33: {mapEftDepositGCode}")	
+
+mapEftDepositHCode = {	
+           'Y': '1'
+}	
+print(f"D51E-34: {mapEftDepositHCode}")	
+
+mapEftDepositJCode = {	
+           'Y': '1'
+}	
+print(f"D51E-35: {mapEftDepositJCode}")	
+
+mapEftDepositKCode = {	
+           'Y': '1'
+}	
+print(f"D51E-36: {mapEftDepositKCode}")	
+
+mapEftDepositLCode = {	
+           'Y': '1',
+}	
+print(f"D51E-37: {mapEftDepositLCode}")	
+
+mapEftDepositMCode = {	
+           'Y': '1'
+}	
+print(f"D51E-38: {mapEftDepositMCode}")	
+
+mapThirteenMonthTaxLotRunCode = {	
+           'Y': '1'
+}	
+print(f"D51E-39: {mapThirteenMonthTaxLotRunCode}")	
+
+mapCashBackPutCode = {	
+           'Y': '1'
+}	
+print(f"D51E-40: {mapCashBackPutCode}")	
+
+mapMarriedPutCode = {	
+           'Y': '1'
+}	
+print(f"D51E-41: {mapMarriedPutCode}")	
+
+mapIndexedWarrantPutCode = {	
+           'Y': '1'
+}	
+print(f"D51E-42: {mapIndexedWarrantPutCode}")	
+
+mapForeignCurrencyOptionPurchaseCode = {	
+           'Y': '1'
+
+}	
+print(f"D51E-43: {mapForeignCurrencyOptionPurchaseCode}")	
+
+
+# #---------------------------------------------------------------------------------------------------------------------
+# # CreateSourceRowStructure
+# #---------------------------------------------------------------------------------------------------------------------
+import logging
+
+def log_errors(inner):
+    def wrapper(*args, **kwargs):
+        try:
+            return inner(*args, **kwargs)
+        except Exception as e:
+            logging.exception('Error in function: {}'.format(inner))
+            raise
+    return wrapper
+print("OK1")
+
+@log_errors
+def CreateSourceRowStructure(record):
+    
+    rowId      = record["_ROW_ID"]
+    rowData    = record["value"]
+    
+    rowStatus  = 0
+    exceptions = []
+
+    # Check row length
+    rowLength = len(rowData)
+    
+    # COMMON
+    record["CLIENT"]                = rowData[47-1:49]
+	record["BRANCH"]                = rowData[50-1:52]
+	record["ACCOUNT"]               = rowData[53-1:61]
+	record["RECORD ID"]             = rowData[62-1:63]
+	record["RECORD ID-2"]           = rowData[64-1:65]
+	record["FILLER"]                = rowData[66-1:68]
+    
+    #PLACEHOLDER X-ref to be implemented once the data is available   
+    rowType                         = rowData[62-1:65] 
+    
+    if rowType == "00A":
+        # Row type: 00A - DATE HEADER RECORD
+        rowType = "DATE HEADER RECORD"
+        record["FILLER"]            = rowData[1-1:36]
+        record["DATE="]             = rowData[37-1:41]
+        record["PRODUCTION DATE"]   = rowData[42-1:47]
+        record["SYSTEM DATE"]       = rowData[48-1:53]
+        record["SYSTEM TIME"]       = rowData[54-1:59]
+        record["FILE DSN"]          = rowData[60-1:76]
+            
+    elif rowType == "10A":
+        # Row type: 10A - PRINCIPAL PARTY
+        rowType = "DATE HEADER RECORD"
+        record["COMMON"] = rowData[47-1:68]
+        record["SEGMENT A"] = rowData[69-1]
+        record["LENGTH OF THIS SEGMENT"] = rowData[70-1:73]
+        record["IRA/SEP/KEOGH INDICATOR"] = rowData[74-1]
+        record["NUMBER OF CONFIRMS"] = rowData[75-1]
+        record["NUMBER OF STATEMENTS"] = rowData[76-1]
+        record["REGISTERED REPRESENTATIVE−1 (LEFT JUSTIFIED)"] = rowData[77-1:82]
+        record["TYPE 1 (CASH)"] = rowData[83-1]
+		record["TYPE 2 (MARGIN)"] = rowData[84-1]
+		record["TYPE 3 (DIVIDEND/INTEREST)"] = rowData[85-1]
+		record["TYPE 4 (QSSP)"] = rowData[86-1]
+		record["TYPE 5 (SHORT)"] = rowData[88-1]
+		record["TYPE 6 (QSSP CASH)"] = rowData[88-1]
+		record["TYPE 7 (CONVERTIBLE BOND)"] = rowData[89-1]
+		record["TYPE 8 (NON−CONVERTIBLE BOND)"] = rowData[90-1]
+		record["TYPE 9 (COD/COR ACCOUNT)"] = rowData[91-1]
+		record["TYPE 0 (FOR FUTURE USE)"] = rowData[92-1]
+		record["DEBIT INTEREST RATE"] = rowData[93-1:99]
+		record["DEBIT INTEREST CODE"] = rowData[101-1]
+		record["CREDIT INTEREST RATE"] = rowData[102-1:108]
+		record["(+/-)"] = rowData[109-1]
+		record["CREDIT INTEREST CODE"] = rowData[110-1]
+		record["SOCIAL SEC−1 / TAX−ID−1 / SOCIAL INS−1 NUMBER"] = rowData[101-1:109]
+		record["SOCIAL SECURITY / TAX−ID CODE−1"] = rowData[110-1:110]
+		record["SOCIAL SEC−1 / TAX−ID−1 / SOCIAL INS−1 NUMBER"] = rowData[111-1:119]
+		record["SOCIAL SECURITY / TAX−ID CODE−1"] = rowData[120-1:120]
+		record["SOCIAL SEC−2 / TAX−ID−2 / SOCIAL INS−2 NUMBER"] = rowData[121-1:129]
+		record["SOCIAL SECURITY / TAX−ID CODE−2"] = rowData[130-1]
+		record["DIVIDEND CODE"] = rowData[131-1]
+		record["BUY INSTRUCTIONS"] = rowData[132-1:133]
+		record["SELL INSTRUCTIONS"] = rowData[134-1:135]
+		record["ACCOUNT CLASSIFICATION CODE"] = rowData[136-1:138]
+		record["NEW YORK STATE RESIDENCY CODE"] = rowData[139-1]
+		record["U.S. ZIP CODE / CANADIAN POSTAL CODE"] = rowData[140-1:148]
+		record["GEOGRAPHIC LOCATION"] = rowData[149-1:151]
+		record["SPECIAL BOND COMMISSION CODE"] = rowData[152-1]
+		record["SPECIAL STOCK COMMISSION CODE"] = rowData[153-1]
+		record["FOREIGN STOCK DIVIDEND WITHHOLDING RATE"] = rowData[154-1:156]
+		record["FOREIGN BOND INTEREST WITHHOLDING RATE"] = rowData[157-1:159]
+		record["STARTING POSITION OF LAST NAME IN N/A LINES"] = rowData[160-1:161]
+		record["LENGTH OF LAST NAME"] = rowData[162-1:163]
+		record["PORTFOLIO STATUS REPORTING"] = rowData[164-1]
+		record["TRUST AGREEMENT / KNOW YOUR CUSTOMER"] = rowData[165-1]
+		record["MARGIN AGREEMENT ON FILE"] = rowData[166-1]
+		record["JOINT AGREEMENT / CORPORATE RESOLUTION"] = rowData[167-1]
+		record["LOAN AGREEMENT ON FILE"] = rowData[168-1]
+		record["GUARANTEED / GUARANTOR ACCOUNT CODE"] = rowData[169-1]
+		record["AUTOMATIC DAILY FUND TRANSFER (SWEEP)"] = rowData[170-1:171]
+		record["AUTOMATIC CASH MANAGEMENT (ACM) CODE"] = rowData[172-1:173]
+		record["USA TAX WITHHOLDING INDICATOR"] = rowData[174-1:175]
+		record["OPTION AGREEMENT / IA / BLANKET LETTER / DISCRETIONARY"] = rowData[176-1]
+		record["90 DAY RESTRICTION INDICATOR"] = rowData[177-1]
+		record["NO−MORE−BUSINESS INDICATOR"] = rowData[178-1]
+		record["OPTION PURCHASE, SPREAD, PROSPECTUS, NO OPTION TRADING"] = rowData[179-1]
+		record["NAKED PUT SELLING/ NAKED WRITING/ COVER WRITING"] = rowData[180-1]
+		record["BAS/DTC ACCOUNT NUMBER"] = rowData[181-1:185]
+		record["(+/-)"] = rowData[186-1]
+		record["TYPE−3 CREDIT INCOME OPTION (DIVIDEND INCOME A/C)"] = rowData[187-1]
+		record["DATE OF OPTION APPROVAL / DATE PROSPECTUS SENT"] = rowData[188-1:195]
+		record["DIVIDEND BUY FRACTION CODE"] = rowData[196-1]
+		record["SETTLEMENT OFFICE − RIGHT JUST., LEADING ZEROS"] = rowData[197-1:201]
+		record["DATE OF BIRTH − 0YYYYMMDDS"] = rowData[202-1:209]
+		record["MARGIN ACCOUNT INSURANCE CODE / RR"] = rowData[210-1]
+		record["(CLNT 024 ONLY) SWEEP CODE"] = rowData[211-1]
+		record["99−FUNDS SLOT #1"] = rowData[212-1:214]
+		record["RE−INVESTMENT CODE"] = rowData[215-1]
+		record["CHECK REDEMPTION CODE"] = rowData[216-1]
+		record["DATE TEFRA LAST UPDATED"] = rowData[217-1:224]
+		record["OBJECT−TO−DISCLOSURE CODE (PROXY)"] = rowData[225-1]
+		record["INDIVIDUAL / NON−INDIVIDUAL CODE /"] = rowData[226-1:227]
+		record["BROKER BOOK INDICATOR"] = rowData[228-1]
+		record["SOC. SEC. # HOLDER − N/A LINE POINTER"] = rowData[229-1]
+		record["SECOND LINE PAYEE − N/A LINE POINTER"] = rowData[230-1]
+		record["MAILING ADDRESS − N/A LINE POINTER"] = rowData[231-1]
+		record["CITY NAME − N/A LINE POINTER"] = rowData[232-1]
+		record["LENGTH OF CITY NAME"] = rowData[233-1:234]
+		record["ADDRESS LOCATION CODE (ALC)"] = rowData[235-1:237]
+		record["YEAR−END RECORD INDICATOR (SYSTEM GENERATED)"] = rowData[238-1]
+		record["PROVIDENT BANK CASH SWEEP/FUND PROCESSOR CODE"] = rowData[239-1]
+		record["PREVIOUS PROVIDENT BANK PROCESSOR CODE"] = rowData[240-1]
+		record["DATE 90 DAY RESTRICTION BEGAN"] = rowData[241-1:248]
+		record["DATE 90 DAY RESTRICTION ENDED"] = rowData[249-1:256]
+		record["PROFIT CENTER BRANCH (PCB)"] = rowData[257-1:261]
+		record["CURRENCY CODE"] = rowData[262-1:264]
+		record["CONFIRM HOLD CODE"] = rowData[265-1]
+		record["LANGUAGE CODE"] = rowData[266-1]
+		record["INVOICE CONFIRMATIONS CODE /"] = rowData[267-1]
+		record["MAILING LIST INSTRUCTIONS"] = rowData[268-1]
+		record["NET PAYOUT TO REGISTERED REP"] = rowData[269-1:273]
+		record["(+/-)"] = rowData[274-1]
+		record["NUMBER OF ACCOUNT TITLE LINES"] = rowData[275-1]
+		record["RELATED ACCOUNT CODE / INVESTMENT ADVISOR ACCT"] = rowData[276-1]
+		record["STATE CODE"] = rowData[277-1:278]
+		record["OPTION ACCOUNT INDICATOR"] = rowData[279-1]
+		record["CUSTOMER TYPE"] = rowData[280-1:282]
+		record["SPECIAL DOCUMENTS TYPE"] = rowData[283-1:285]
+		record["ACAT CODE"] = rowData[286-1]
+		record["POSTAL FEE CODE"] = rowData[287-1:288]
+		record["ACCOUNT TRANSFER CODE"] = rowData[289-1]
+		record["DUE−DILIGENCE CODE"] = rowData[290-1]
+		record["DATE DUE−DILIGENCE NOTICE SENT"] = rowData[291-1:298]
+		record["DATE DUE−DILIGENCE PREVIOUS NOTICE"] = rowData[299-1:306]
+		record["DATE ACCOUNT LAST ACTIVE"] = rowData[307-1:314]
+		record["A/I FOR ACCOUNT ON VSAM FILE A OR I"] = rowData[315-1]
+		record["NUMBER OF INTERESTED PARTIES"] = rowData[316-1:317]
+		record["FIRST I/PARTY FOR ID SYSTEM"] = rowData[318-1:319]
+		record["SECOND I/PARTY FOR ID SYSTEM"] = rowData[320-1:321]
+		record["I/PARTY FOR INCOME CHECKS"] = rowData[322-1:323]
+		record["I/PARTY FOR TRANSFERS"] = rowData[324-1:325]
+		record["POWER−OF−ATTORNEY CODE"] = rowData[326-1]
+		record["POWER−OF−ATTORNEY DATE"] = rowData[327-1:334]
+		record["IRS 1042 RECIPIENT"] = rowData[335-1:336]
+		record["FEDERAL RESERVE"] = rowData[337-1:339]
+		record["1099 DETAIL ADJUSTMENT STATEMENT INDICATOR"] = rowData[340-1]
+		record["DATE RECORD OPENED"] = rowData[341-1:348]
+		record["DATE RECORD CHANGED"] = rowData[349-1:356]
+		record["FILLER"] = rowData[357-1:360]
+		record["1001 FORM INDICATOR"] = rowData[361-1]
+		record["TRID PRINT CONTROL SETTING"] = rowData[362-1]
+		record["ACM CANCEL CODE"] = rowData[363-1:364]
+		record["AMEX TRANSMIT INDICATOR"] = rowData[365-1]
+		record["DATE RECORD ADDED"] = rowData[366-1:373]
+		record["PREVIOUS DUE−DILIGENCE CODE (2ND NOTICE)"] = rowData[374-1]
+		record["NUMBER OF PRINCIPAL PARTY SEGMENTS"] = rowData[375-1:376]
+		record["SEGMENT ID OF 1ST SEGMENT"] = rowData[377-1]
+		record["STARTING ADDRESS OF 1ST SEGMENT USED BY ACCOUNT"] = rowData[368-1:381]
+		record[""SEGMENT CONTROL" AREA # 2"] = rowData[382-1:386]
+		record[""SEGMENT CONTROL" AREA # 3"] = rowData[387-1:391]
+		record[""SEGMENT CONTROL" AREA # 4"] = rowData[392-1:396]
+		record[""SEGMENT CONTROL" AREA # 5"] = rowData[397-1:401]
+		record[""SEGMENT CONTROL" AREA # 6"] = rowData[402-1:406]
+		record[""SEGMENT CONTROL" AREA # 7"] = rowData[407-1:411]
+		record[""SEGMENT CONTROL" AREA # 8"] = rowData[412-1:416]
+		record[""SEGMENT CONTROL" AREA # 9"] = rowData[417-1:421]
+		record[""SEGMENT CONTROL" AREA # 10"] = rowData[422-1:426]
+		record[""SEGMENT CONTROL" AREA # 11"] = rowData[427-1:431]
+		record[""SEGMENT CONTROL" AREA # 12"] = rowData[432-1:436]
+		record[""SEGMENT CONTROL" AREA # 13"] = rowData[437-1:441]
+		record[""SEGMENT CONTROL" AREA # 14"] = rowData[442-1:446]
+		record[""SEGMENT CONTROL" AREA # 15"] = rowData[447-1:451]
+         
+
+    elif rowType == "10B":
+        # Row type: 10B - PP, BPS N/A LINES  ACTUAL
+        rowType = "PP, BPS N/A LINES  ACTUAL"
+        record["SEGMENT B"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["NUMBER OF N/A LINES"] = rowData[52-1]
+		record["N/A LINE 1"] = rowData[53-1:87]
+		record["N/A LINE 2"] = rowData[88-1:122]
+		record["N/A LINE 3"] = rowData[123-1:157]
+		record["N/A LINE 4"] = rowData[158-1:192]
+		record["N/A LINE 5"] = rowData[193-1:227]
+		record["N/A LINE 6"] = rowData[228-1:262]
+		record["N/A LINE 7"] = rowData[263-1:297]
+		record["N/A LINE 8"] = rowData[298-1:332]
+		record["N/A LINE 9"] = rowData[333-1:367]
+
+            
+    elif rowType == "10C":
+        # Row type: 10C - PP, CANADIAN INFO
+        rowType = "PP, CANADIAN INFO"
+		record["SEGMENT C"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["NEW AGREEMENT CODES"] = rowData[52-1]
+		record["PROFESSIONAL ACCOUNT CODE"] = rowData[55-1]
+		record["TORONTO STOCK EXCHANGE (TSE) / (RAMA) CODES"] = rowData[56-1:58]
+		record["PROVINCE CODE"] = rowData[59-1]
+		record["CDCC CLEARING NUMBER"] = rowData[60-1:62]
+		record["CDCC CLEARING CODE"] = rowData[63-1]
+		record["APPROVED BROKER CODE"] = rowData[64-1]
+		record["TSE MINIMUM COMMISSION RATE"] = rowData[65-1:69]
+		record["(+/-)"] = rowData[70-1]
+		record["TURNAROUND TRADE INDICATOR"] = rowData[71-1]
+		record["TAPER CODE"] = rowData[72-1]
+		record["OUT−OF−TOWN COLLECTION CHARGE"] = rowData[73-1:79]
+		record["CANCELLATION CHARGE"] = rowData[80-1:86]
+		record["CHARGE FREQUENCY"] = rowData[87-1]
+		record["CHARGE AMOUNT"] = rowData[88-1:94]
+		record["DIV/INT COLLECTION CHARGE RATE"] = rowData[95-1:99]
+		record["CREDIT LIMIT"] = rowData[100-1:104]
+		record["DAYS TO DELIVER FOR SETTLEMENT"] = rowData[105-1]
+		record["PROSPECTUS MAIL CODE"] = rowData[106-1]
+		record["NO−DOCUMENTS CODE"] = rowData[107-1]
+		record["SPECIAL MARGIN REQUIREMENTS"] = rowData[108-1:112]
+		record["(+/-)"] = rowData[113-1]
+		record["PARENT ACCOUNT NUMBER FOR MIS"] = rowData[114-1:128]
+		record["STOCK WITHHOLDING RATE − PREFERENTIAL COUNTRIES"] = rowData[129-1:133]
+		record["BOND WITHHOLDING RATE − PREFERENTIAL COUNTRIES"] = rowData[134-1:138]
+		record["IPC ROUTING OFFICE"] = rowData[139-1:143]
+		record["CANADIAN OUTBND FIXED AMOUNT (A)"] = rowData[144-1:150]
+		record["(+/-)"] = rowData[151-1]
+		record["SHORT NAME KEY"] = rowData[152-1:171]
+		record["3RD PARTY REGISTRY"] = rowData[172-1:176]
+		record["USER INSTRUCTION"] = rowData[177-1:181]
+		record["DEPARTMENT ID A−Z, 0−9"] = rowData[182-1:184]
+		record["INSTITUTIONAL ACCOUNT (PART−1 1−9)"] = rowData[185-1:193]
+		record["SHORT NAME"] = rowData[194-1:207]
+		record["INSTITUTIONAL ACCOUNT (PART−2 10−12)"] = rowData[208-1:210]
+		record["OPEN"] = rowData[211-1]
+		record["SPECIAL INSTRUCTION DESC LINE 2"] = rowData[212-1:241]
+		record["CANADIAN OUTBND BANK NUMBER (A)"] = rowData[242-1:245]
+		record["CANADIAN OUTBND TRANSIT NUMBER (A)"] = rowData[246-1:250]
+		record["CANADIAN OUTBND BANK ACCOUNT NUMBER (A)"] = rowData[251-1:262]
+		record["U.S.A. OUTBND BANK NUMBER (G)"] = rowData[263-1:266]
+		record["U.S.A. OUTBND TRANSIT NUMBER (G)"] = rowData[267-1:271]
+		record["U.S.A. OUTBND BANK ACCOUNT NUMBER (G)"] = rowData[272-1:283]
+		record["MIN. EXEC."] = rowData[284-1:287]
+		record["CANADIAN OUTBND AFT DAY (A)"] = rowData[288-1:289]
+		record["CANADIAN OUTBND PAYMENT METHOD (A)"] = rowData[290-1:292]
+		record["CUID"] = rowData[293-1:296]
+		record["CORP CONTACT"] = rowData[297-1:303]
+		record["SUB ACCOUNT"] = rowData[304-1:306]
+		record["ISSUER"] = rowData[307-1:310]
+		record["LOGICAL DELETE INDICATOR (SYSTEM GENERATED)"] = rowData[311-1]
+		record["TAX EXEMPTION INDICATOR"] = rowData[312-1:314]
+		record["EXCL"] = rowData[315-1:317]
+		record["IC76 TAX IND"] = rowData[318-1]
+		record["CRARQ CODE"] = rowData[319-1]
+		record["MUTUAL FUND ACCT DESTINATION INDICATOR"] = rowData[320-1]
+		record["NON−CONSOLIDATED COMMISSION INDICATOR"] = rowData[321-1]
+		record["DIVIDEND CODE 2"] = rowData[322-1]
+		record["FOR FUTURE USE"] = rowData[323-1:325]
+
+
+    elif rowType == "10D":
+        # Row type: 10D - PRINCIPAL PARTY RECORD, TELEPHONE SEGMENT
+        rowType = "PRINCIPAL PARTY RECORD, TELEPHONE SEGMENT"
+		record["SEGMENT D"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["OLD TELEPHONE COUNT"] = rowData[52-1]
+		record["OLD TELEPHONE ID"] = rowData[53-1]
+		record["OLD TELEPHONE NUMBER"] = rowData[45937-1]
+		record["NO. OF TELEPHONES IN THIS SEGMENT"] = rowData[69-1:70]
+		record["PHONE TYPE"] = rowData[71-1]
+		record["FOREIGN COUNTRY/CITY CODE OR U.S. AREA CODE"] = rowData[72-1:76]
+		record["EXCHANGE"] = rowData[77-1:79]
+		record["NUMBER"] = rowData[80-1:83]
+		record["EXTENSION"] = rowData[84-1:87]
+		record["2ND TELEPHONE AREA"] = rowData[88-1:103]
+		record["3RD TELEPHONE AREA"] = rowData[105-1:120]
+		record["4TH TELEPHONE AREA"] = rowData[122-1:138]
+		record["5TH TELEPHONE AREA"] = rowData[139-1:155]
+		record["6TH TELEPHONE AREA"] = rowData[156-1:172]
+		record["7TH TELEPHONE AREA"] = rowData[173-1:189]
+		record["8TH TELEPHONE AREA"] = rowData[190-1:206]
+		record["9TH TELEPHONE AREA"] = rowData[16223-1]
+		record["10TH TELEPHONE AREA"] = rowData[224-1:240]
+		record["11TH TELEPHONE AREA"] = rowData[241-1:257]
+		record["12TH TELEPHONE AREA"] = rowData[258-1:274]
+		record["13TH TELEPHONE AREA"] = rowData[275-1:291]
+		record["14TH TELEPHONE AREA"] = rowData[292-1:308]
+
+            
+    elif rowType == "10E":
+        # Row type: 10E - PRINCIPAL PARTY RECORD, RELATED ACCOUNTS SEGMENT
+        rowType = "PRINCIPAL PARTY RECORD, RELATED ACCOUNTS SEGMENT"
+		record["SEGMENT E"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["NUMBER OF "RELATED ACCOUNT" AREAS ON THIS RECORD"] = rowData[52-1:53]
+		record["RELATED ACCOUNT ID FOR FIRST AREA"] = rowData[53-1:54]
+		record["BRANCH NUMBER FOR FIRST AREA"] = rowData[55-1:60]
+		record["ACCOUNT NUMBER FOR FIRST AREA"] = rowData[61-1:70]
+		record["2ND TO 50TH RELATED ACCOUNT AREAS"] = rowData[71-1:903
+ 
+ 
+    elif rowType == "10I":
+        # Row type: 10I - PRINCIPAL PARTY RECORD, MISC. INFO SEGMENT
+        rowType = "PRINCIPAL PARTY RECORD, MISC. INFO SEGMENT"
+		record["SEGMENT I"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["WRAP FEE"] = rowData[52-1:56]
+		record["WRAP FEE EXCEMPT"] = rowData[57-1]
+		record["INTERNATIONAL ID CODE"] = rowData[58-1:62]
+		record["SETTLEMENT TYPE"] = rowData[63-1]
+		record["NAME CONTROL"] = rowData[64-1:67]
+		record["ZIP CODE DELIVERY POINT"] = rowData[68-1:70]
+		record["ACAT RECEIVING BROKER CLEARING NUMBER"] = rowData[71-1:74]
+		record["ACAT DELIVERING BROKER CLEARING NUMBER"] = rowData[75-1:78]
+		record["ACCOUNT STATUS - CLIENT DEFINED"] = rowData[79-1:81]
+		record["DATE 1ST PREVIOUS 90 DAY RESTRICTION BEGAN."] = rowData[82-1:89]
+		record["DATE 2ND PREVIOUS 90 DAY RESTRICTION BEGAN."] = rowData[90-1:97]
+		record["DATE 3RD PREVIOUS 90 DAY RESTRICTION BEGAN."] = rowData[98-1:105]
+		record["AUTOMATIC PERIODIC PAYMENT CODE"] = rowData[106-1:107]
+		record["AUTX ACCESS CODE"] = rowData[108-1:119]
+		record["AUTX INSTUTION ACRONYM"] = rowData[120-1:127]
+		record["DIVIDEND CODE"] = rowData[128-1]
+		record["1 = PAY DIVIDEND CHECK MONTHLY"] = rowData[129-1]
+		record["2 = HOLD FUNDS"] = rowData[130-1]
+		record["3 = PAY DAILY"] = rowData[131-1]
+		record["4 = PAY WEEKLY"] = rowData[164-1]
+		record["5 = PAY QUARTERLY"] = rowData[169-1]
+		record["6 = SEMI MONTHLY (CANADA ONLY)"] = rowData[221-1]
+		record["DIVIDEND NOTICE CODE"] = rowData[129-1]
+		record["ERISA CODE"] = rowData[130-1]
+		record["HOLD STATEMENT"] = rowData[131-1]
+		record["DATE OF LAST BATCH PROCESSING"] = rowData[132-1:139]
+		record["DATE BUSINESS WAS STOPPED"] = rowData[140-1:147]
+		record["DATE BUSINESS WAS REINSTATED"] = rowData[148-1:155]
+		record["DATE LAST STATEMENT WAS PRODUCED"] = rowData[156-1:163]
+		record["LAST DAY OF MONTH STATEMENT"] = rowData[164-1]
+		record["MULTIPLE DELIVERY CODE"] = rowData[165-1:166]
+		record["FEE CODE"] = rowData[167-1:168]
+		record["FEE EXEMPT"] = rowData[169-1]
+		record["FEE CHARGE FREQUENCY"] = rowData[170-1:171]
+		record["FEE OVERIDE CHARGE PERCENTAGE"] = rowData[172-1:176]
+		record["DOLLAR TRADE LIMIT"] = rowData[177-1:189]
+		record["UNIT TRADE LIMIT"] = rowData[190-1:198]
+		record["OPTION EXPOSURE LIMIT"] = rowData[199-1:207]
+		record["2ND RR"] = rowData[208-1:210]
+		record["3RD RR"] = rowData[211-1:213]
+		record["PERCENTAGE OF GROSS COMMISSION PAID TO 2ND RR"] = rowData[214-1:220]
+		record["(+/-)"] = rowData[221-1]
+		record["PERCENTAGE OF GROSS COMMISSION PAID TO 3RD RR"] = rowData[222-1:228]
+		record["(+/-)"] = rowData[229-1]
+		record["MONEY MANAGER FOR ACCOUNT"] = rowData[230-1:232]
+		record["TO BYPASS ZIP+4 PROCESSING"] = rowData[233-1]
+		record["IRA MATURE PLAN CODE"] = rowData[234-1]
+		record["RETIREMENT PLAN SUBJECT CODE"] = rowData[235-1]
+		record["RETIREMENT PLAN"] = rowData[236-1]
+		record["RETIREMENT PLAN CLINT CODE"] = rowData[237-1]
+		record["USA / CAN BROKER"] = rowData[238-1]
+		record["PORTFOLIO STATUS REPORTING"] = rowData[239-1]
+		record["ONLINE TRADING SERVICE"] = rowData[240-1]
+		record["TRUST AGREEMENT ON FILE"] = rowData[241-1]
+		record["KNOW YOUR CUSTOMER"] = rowData[242-1]
+		record["OPTION TRADING AGREEMENT ON FILE"] = rowData[243-1]
+		record["INVESTMENT ADVISOR"] = rowData[244-1]
+		record["POWER OF ATTORNEY"] = rowData[245-1]
+		record["DISCRETIONARY ACCOUNT"] = rowData[246-1]
+		record["LIMITED DISCRETIONARY"] = rowData[247-1]
+		record["NO-MORE BUSINESS FOR CASH ACCOUNT"] = rowData[248-1]
+		record["NO-MORE BUSINESS FOR MARGIN ACCOUNT"] = rowData[249-1]
+		record["NO-MORE BUSINESS FOR COMMODITIES ACCOUNT"] = rowData[250-1]
+		record["OPTION PURCHASE"] = rowData[251-1]
+		record["OPTION SPREADING"] = rowData[252-1]
+		record["PROSPECTUS SENT"] = rowData[253-1]
+		record["NO OPTION TRADING"] = rowData[254-1]
+		record["COVERED WRITING"] = rowData[255-1]
+		record["NAKED WRITING"] = rowData[256-1]
+		record["NAKED PUT SELLING"] = rowData[257-1]
+		record["MARGIN ACCOUNT INSURANCE CODE"] = rowData[258-1]
+		record["CHARGE POSTAGE"] = rowData[259-1]
+		record["PAYOUT TO ACCOUNT EXECUTIVE"] = rowData[260-1]
+		record["INVOICE CONFIRMATIONS CODE"] = rowData[261-1]
+		record["REGISTERED REP REGISTRATION EXEMPTION"] = rowData[262-1]
+		record["JOINT AGREEMENT CODE"] = rowData[263-1]
+		record["CORPORATE RESOLUTION"] = rowData[264-1]
+		record["RULE 351 CODE"] = rowData[265-1:267]
+		record["RULE 80A CODE"] = rowData[268-1:270]
+		record["PRIMARY PORTFOLIO SERVICE"] = rowData[271-1]
+		record["SECONDARY PORTFOLIO SERVICE"] = rowData[272-1]
+		record["CASH AGREEMENT"] = rowData[273-1]
+
+            
+    elif rowType == "10N":
+        # Row type: 10N - PRINCIPAL PARTY RECORD, FIXED FIELDS N&A SEGMENT
+        rowType = "PRINCIPAL PARTY RECORD, FIXED FIELDS N&A SEGMENT"
+		record["SEGMENT N"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["NAME"] = rowData[52-1]
+		record["FIRST NAME (PRIMARY)"] = rowData[53-1:72]
+		record["MIDDLE INITIAL (PRIMARY)"] = rowData[73-1]
+		record["LAST NAME (PRIMARY)"] = rowData[74-1:93]
+		record["COMPANY NAME (PRIMARY)"] = rowData[15204-1]
+		record["NOT USED WHEN COMPANY NAME IS USED"] = rowData[88-1:93]
+		record["TITLE"] = rowData[94-1:97]
+		record["GENERATION"] = rowData[98-1:100]
+		record["FILLER"] = rowData[101-1]
+		record["FIRST NAME (JOINT)"] = rowData[102-1:121]
+		record["MIDDLE INITIAL (JOINT)"] = rowData[122-1]
+		record["LAST NAME (JOINT)"] = rowData[123-1:142]
+		record["TITLE"] = rowData[143-1:146]
+		record["GENERATION"] = rowData[147-1:149]
+		record["JOINT ACCOUNT( Y OR N)"] = rowData[150-1]
+		record["SHORT NAME"] = rowData[151-1:170]
+		record["STREET NAME"] = rowData[171-1:200]
+		record["APARTMENT NUMBER"] = rowData[201-1:205]
+		record["CITY"] = rowData[206-1:234]
+		record["STATE CODE"] = rowData[235-1:236]
+		record["ZIP 5 CODE"] = rowData[237-1:241]
+		record["ZIP 4 CODE"] = rowData[242-1:245]
+		record["ZIP DELIVERY POINT"] = rowData[246-1:248]
+		record["CANADIAN POSTAL CODE"] = rowData[249-1:254]
+		record["CANADIAN POSTAL CODE +4"] = rowData[255-1:258]
+		record["FOREIGN POSTAL CODE"] = rowData[259-1:268]
+		record["FOREIGN COUNTRY NAME"] = rowData[269-1:288]
+		record["FIXED ALC CODE"] = rowData[289-1:291]
+		record["LAST IP TAG GENERATED"] = rowData[292-1]
+		record["LAST UPDATE"] = rowData[293-1]
+		record["NAME"] = rowData[294-1]
+		record["TERMINAL ID OF LAST UPDATE"] = rowData[295-1:298]
+		record["TIME HHMMSS OF LAST UPDATE"] = rowData[299-1:304]
+
+            
+    elif rowType == "10O":
+        # Row type: 10O - PRINCIPAL PARTY RECORD, EMPLOYERS DATA SEGMENT
+        rowType = "PRINCIPAL PARTY RECORD, EMPLOYERS DATA SEGMENT"
+		record["SEGMENT O"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["NAME"] = rowData[52-1]
+		record["FIRST NAME"] = rowData[53-1:72]
+		record["MIDDLE INITIAL"] = rowData[73-1]
+		record["LAST NAME"] = rowData[74-1:93]
+		record["COMPANY NAME"] = rowData[94-1]
+		record["NOT USED WHEN COMPANY NAME IS USED"] = rowData[88-1:93]
+		record["STREET"] = rowData[94-1:123]
+		record["APARTMENT"] = rowData[124-1:128]
+		record["CITY"] = rowData[129-1:157]
+		record["STATE CODE"] = rowData[158-1:159]
+		record["ZIP 5 CODE"] = rowData[160-1:164]
+		record["ZIP 4 CODE"] = rowData[165-1:168]
+		record["ZIP DELIVERY POINT"] = rowData[169-1:171]
+		record["CANADIAN POSTAL CODE"] = rowData[172-1:177]
+		record["CANADIAN POSTAL CODE + 4"] = rowData[178-1:181]
+		record["NAME"] = rowData[182-1]
+		record["FIRST NAME"] = rowData[183-1:202]
+		record["MIDDLE INITIAL"] = rowData[203-1]
+		record["LAST NAME"] = rowData[204-1:223]
+		record["COMPANY NAME"] = rowData[183-1:217]
+		record["NOT USED WHEN COMPANY NAME IS USED"] = rowData[218-1:223]
+		record["FUTURE USE"] = rowData[224-1:228]
+
+            
+    elif rowType == "10P":
+        # Row type: 10P - PRINCIPAL PARTY RECORD, PERSONAL INFO SEGMENT
+        rowType = "PRINCIPAL PARTY RECORD, PERSONAL INFO SEGMENT"
+		record["SEGMENT P"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT (INCLUDES POS. 1 - 5)"] = rowData[48-1:51]
+		record["MARITAL STATUS"] = rowData[52-1]
+		record["DATE MARITAL STATUS LAST CHANGED"] = rowData[45898-1]
+		record["NUMBER OF DEPENDENTS"] = rowData[61-1:62]
+		record["DATE NO OF DEPENDENTS LAST CHANGED"] = rowData[63-1:70]
+		record["INCOME LEVEL CODE"] = rowData[71-1:72]
+		record["DATE INCOME LEVEL LAST CHANGED"] = rowData[73-1:80]
+		record["NET WORTH CODE (CLIENT DEFINED)"] = rowData[81-1:82]
+		record["DATE NET WORTH LAST CHANGED"] = rowData[83-1:90]
+		record["LIQUID NET WORTH CODE (CLIENT DEFINED)"] = rowData[91-1:92]
+		record["DATE LIQUID NET WORTH LAST CHANGED"] = rowData[93-1:100]
+		record["TAX BRACKET CODE"] = rowData[101-1:102]
+		record["DATE TAX BRACKET LAST CHANGED"] = rowData[103-1:110]
+		record["RENTS/OWNS CODE"] = rowData[111-1]
+		record["DATE RENT/OWN LAST CHANGED"] = rowData[112-1:119]
+		record["PROFESSION CODE"] = rowData[120-1:121]
+		record["DATE PROFESSION LAST CHANGED"] = rowData[122-1:129]
+		record["SPOUSE PROFESSION CODE"] = rowData[130-1:131]
+		record["DATE SPOUSE PROFESSION LAST CHANGED"] = rowData[132-1:139]
+		record["EDUCATION LEVEL CODE"] = rowData[140-1:141]
+		record["DATE EDUCATION LEVEL LAST CHANGED"] = rowData[142-1:149]
+		record["INVESTMENT EXPERIENCE - USER DEFINED"] = rowData[150-1]
+		record["DATE INV EXPERIENCE LAST CHANGED"] = rowData[151-1:158]
+		record["INVESTMENT OBJECTIVE - USER DEFINED"] = rowData[159-1:162]
+		record["DATE INV OBJECTIVE LAST CHANGED"] = rowData[163-1:170]
+		record["CUSTOMER RESPONSE"] = rowData[171-1:172]
+		record["DATE CUSTOMER REPONSE LAST CHANGED"] = rowData[173-1:180]
+		record["REFERRAL CODE"] = rowData[181-1:182]
+		record["ISO CODE OF COUNTRY OF RESIDENCE"] = rowData[183-1:184]
+		record["SPOUSE SSN CODE"] = rowData[185-1]
+		record["HOME NET WORTH CODE (CLIENT DEFINED)"] = rowData[186-1:187]
+		record["HOW THE CLIENT WAS FOUND"] = rowData[188-1:189]
+		record["PREVIOUS RR"] = rowData[190-1:192]
+		record["DATE EMPLOYED"] = rowData[193-1:200]
+		record["ADDRESS UNKNOWN DATE"] = rowData[201-1:208]
+		record["PIN - PERSONAL ID NUMBER"] = rowData[209-1:228]
+		record["DATE PIN LAST CHANGED"] = rowData[229-1:236]
+		record["MOTHERS MAIDEN NAME"] = rowData[237-1:266]
+		record["SPOUSE FIRST NAME"] = rowData[267-1:286]
+		record["SPOUSE MIDDLE INITIAL"] = rowData[287-1]
+		record["SPOUSE LAST NAME"] = rowData[288-1:307]
+		record["SPOUSE BIRTH DATE"] = rowData[308-1:315]
+		record["SPOUSE SSN/SIN"] = rowData[316-1:324]
+		record["BRANCH"] = rowData[325-1:327]
+		record["ACCOUNT"] = rowData[328-1:332]
+		record["BRANCH"] = rowData[333-1:335]
+		record["ACCOUNT"] = rowData[336-1:340]
+		record["COMMODITIES/FUTURES ACCOUNT"] = rowData[341-1]
+		record["COMMODITIES/FUTURES APPROVAL CODE"] = rowData[342-1]
+		record["COMMODITIES/FUTURES RISK CAPITAL CODE"] = rowData[343-1:344]
+		record["COMMODITIES/FUTURES PAST EXPERIENCE"] = rowData[345-1]
+		record["COMMODITIES/FUTURES SPECULATION %"] = rowData[346-1:351]
+		record["COMMODITIES/FUTURES HEDGE %"] = rowData[352-1:357]
+		record["BANK NAME"] = rowData[358-1:377]
+		record["BRANCH-NAME"] = rowData[378-1:397]
+		record["CONTACT NAME"] = rowData[398-1:417]
+		record["ACCOUNT SINCE (YEAR - CCYY)"] = rowData[418-1:421]
+		record["CREDIT RATING CODE"] = rowData[422-1:423]
+		record["CREDIT CHECK"] = rowData[424-1]
+		record["INCOME %"] = rowData[425-1:430]
+		record["CAPAP %"] = rowData[431-1:436]
+		record["SPTR %"] = rowData[437-1:442]
+		record["PERCENT CHANGE DATE"] = rowData[443-1:450]
+		record["RISK FACTOR LOW"] = rowData[451-1:453]
+		record["RISK FACTOR MEDIUM"] = rowData[454-1:456]
+		record["RISK FACTOR HIGH"] = rowData[457-1:459]
+		record["RISK FACTOR CHANGE DATE"] = rowData[460-1:467]
+		record["HOUSEHOLDING CODE"] = rowData[468-1:471]
+		record["MEDTM %"] = rowData[472-1:477]
+
+            
+    elif rowType == "10S":
+        # Row type: 10S - PRINCIPAL PARTY RECORD, SWEEP CURRENCY SEGMENT
+        rowType = "PRINCIPAL PARTY RECORD, SWEEP CURRENCY SEGMENT"
+		record["SEGMENT S"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[45739-1]
+		record["SWEEP CURRENCY / FUND NUMBER COUNT"] = rowData[45861-1]
+		record["FUTURE USE"] = rowData[45932-1]
+		record["SWEEP CURRENCY 1"] = rowData[64-1:66]
+		record["SWEEP FUND 1"] = rowData[67-1:68]
+		record["2ND SWEEP"] = rowData[69-1:73]
+		record["3RD SWEEP"] = rowData[74-1:78]
+		record["4TH SWEEP"] = rowData[79-1:83]
+		record["5TH SWEEP"] = rowData[84-1:88]
+		record["6TH SWEEP"] = rowData[89-1:93]
+		record["7TH SWEEP"] = rowData[94-1:98]
+		record["8TH SWEEP"] = rowData[99-1:103]
+		record["9TH SWEEP"] = rowData[104-1:108]
+		record["10TH SWEEP"] = rowData[109-1:113]
+		record["11TH SWEEP"] = rowData[114-1:118]
+		record["12TH SWEEP"] = rowData[119-1:123]
+		record["13TH SWEEP"] = rowData[124-1:128]
+		record["14TH SWEEP"] = rowData[129-1:133]
+		record["15TH SWEEP"] = rowData[134-1:138]
+		record["16TH SWEEP"] = rowData[139-1:143]
+		record["17TH SWEEP"] = rowData[144-1:148]
+		record["18TH SWEEP"] = rowData[149-1:153]
+		record["19TH SWEEP"] = rowData[154-1:158]
+		record["20TH SWEEP"] = rowData[159-1:163]
+
+            
+    elif rowType == "10T":
+        # Row type: 10T - PRINCIPAL PARTY RECORD, TRANSFER SEGMENT
+        rowType = "PRINCIPAL PARTY RECORD, TRANSFER SEGMENT"
+		record["SEGMENT T"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["TRANSFERRED TO BRANCH"] = rowData[52-1:56]
+		record["TRANSFERRED TO ACCOUNT"] = rowData[57-1:66]
+		record["TRANSFERRED TO REG REP"] = rowData[67-1:72]
+		record["TRANSFERRED TO DATE"] = rowData[73-1:80]
+		record["TRANSFERRED FROM BRANCH"] = rowData[81-1:85]
+		record["TRANSFERRED FROM ACCOUNT"] = rowData[86-1:95]
+		record["TRANSFERRED FROM REG REP"] = rowData[96-1:101]
+		record["TRANSFERRED FROM DATE"] = rowData[102-1:109]
+		record["FUTURE USE"] = rowData[110-1:154]
+
+            
+    elif rowType == "11A":
+        # Row type: 11A - COMPLIANCE RECORD, BASE SEGMENT
+        rowType = "11A - COMPLIANCE RECORD, BASE SEGMEN"
+		record["COMMON RECORD AREA (RECORD ID = 11)"] = rowData[47-1:68]
+		record["SEGMENT A"] = rowData[69-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[70-1:73]
+		record["NUMBER OF ADDITIONAL SEGMENTS"] = rowData[74-1:75]
+		record["SEGMENT ID OF 1ST SEGMENT (EXCLUDES SEG A)"] = rowData[76-1]
+		record["STARTING ADDRESS OF THE FIRST SEGMENT IS"] = rowData[77-1:80]
+		record["" SEGMENT CONTROL" AREA #2"] = rowData[81-1:85]
+		record["" SEGMENT CONTROL" AREA #3"] = rowData[86-1:90]
+		record["" SEGMENT CONTROL" AREA #4"] = rowData[91-1:95]
+		record["" SEGMENT CONTROL" AREA #5"] = rowData[96-1:100]
+		record["" SEGMENT CONTROL" AREA #6"] = rowData[101-1:105]
+		record["" SEGMENT CONTROL" AREA #7"] = rowData[106-1:110]
+            
+    elif rowType == "11B":
+        # Row type: 11B - COMPLIANCE RECORD, COMPLIANCE INFO SEGMENT
+        rowType = "COMPLIANCE RECORD, COMPLIANCE INFO SEGMENT"
+		record["SEGMENT ID B"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["TRADING AUTHORITY OF FINANCIAL INTEREST IN ACCT."] = rowData[52-1]
+		record["1ST PERSON WITH AUTHORITY"] = rowData[53-1:72]
+		record["2ND PERSON WITH AUTHORITY"] = rowData[73-1:92]
+		record["3RD PERSON WITH AUTHORITY"] = rowData[93-1:112]
+		record["4TH PERSON WITH AUTHORITY"] = rowData[113-1:132]
+		record["DISCRETIONARY EXPIRY DATE"] = rowData[133-1:140]
+		record["PERSON WITH DISCRETIONARY AUTHORITY"] = rowData[141-1:160]
+		record["SECURITIES REGISTERED IN ANOTHER NAME"] = rowData[161-1]
+		record["DIVIDEND PAYMENTS TO ANOTHER"] = rowData[162-1]
+		record["U.S. ACCOUNT APPROVAL CODE"] = rowData[163-1]
+		record["RELATED EMPLOYEE"] = rowData[164-1:183]
+		record["RELATIONSHIP TO EMPLOYEE"] = rowData[184-1:203]
+		record["RR HAS DIRECT INTEREST IN ACCOUNT"] = rowData[204-1]
+		record["RR INTEREST TEXT 1"] = rowData[205-1:224]
+		record["RR INTEREST TEXT 2"] = rowData[225-1:244]
+		record["RR INTEREST TEXT 3"] = rowData[245-1:264]
+		record["INITIAL ORDER BUY/SELL CODE"] = rowData[265-1]
+		record["INITIAL ORDER SOLICITED"] = rowData[266-1]
+		record["INITIAL ORDER TRADE VALUE"] = rowData[267-1:268]
+		record["INITIAL CASH/SECURITIES RECEIVED VALUE"] = rowData[269-1:270]
+		record["MARKET PROFESSIONAL CODE FOR U.K."] = rowData[271-1:272]
+		record["BUSINESS CUSTOMER CODE FOR U.K."] = rowData[273-1:274]
+		record["TRADE WITH OTHER BROKERS - REGULAR"] = rowData[275-1]
+		record["TRADE WITH OTHER BROKERS - OPTIONS"] = rowData[276-1]
+		record["TRADE WITH OTHER BROKERS - COMMODITY/FUTURES"] = rowData[277-1]
+		record["INTEND TO TRADE WITH FIRM 1 - FINS"] = rowData[278-1:281]
+		record["INTEND TO TRADE WITH FIRM 2 - FINS"] = rowData[282-1:285]
+		record["INTEND TO TRADE WITH FIRM 3 - FINS"] = rowData[286-1:289]
+		record["INTEND TO TRADE WITH FIRM 4 - FINS"] = rowData[290-1:293]
+		record["INTEND TO TRADE WITH FIRM 5 - FINS"] = rowData[294-1:297]
+		record["MANAGED ACCOUNT"] = rowData[298-1]
+		record["KNOWN CLIENT SINCE DATE"] = rowData[299-1:304]
+		record["MET WITH CLIENT"] = rowData[305-1]
+		record["MAIL FORWARDED"] = rowData[306-1]
+		record["PRIVATE CLIENT CODE"] = rowData[307-1:308]
+		record["NAME OF MONEY MANAGER"] = rowData[309-1:328]
+		record["CREDIT REGULATORY CONTRAINTS"] = rowData[329-1:332]
+		record["BROKER EMPLOYEE"] = rowData[333-1]
+		record["BD-CD - TRADE ON BEHALF OF OTHER BROKERS"] = rowData[334-1]
+		record["OATS ACCOUNT TYPE"] = rowData[335-1]
+
+            
+    elif rowType == "11C":
+        # Row type: 11C - COMPLIANCE RECORD, PUBLIC COMPANIES SEGMENT
+        rowType = "COMPLIANCE RECORD, PUBLIC COMPANIES SEGMENT"
+		record["SEGMENT C"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["CLIENT/SPOUSE EMP/DIR OF STOCK EXCHANGE IND"] = rowData[52-1]
+		record["CLIENT/SPOUSE EMP/DIR OF STOCK EXCHANGE DETAIL 1"] = rowData[53-1:82]
+		record["CLIENT/SPOUSE EMP/DIR OF STOCK EXCHANGE DETAIL 2"] = rowData[83-1:112]
+		record["PUBLIC COMPANY 1"] = rowData[113-1:132]
+		record["PUBLIC COMPANY 2"] = rowData[133-1:152]
+		record["PUBLIC COMPANY 3"] = rowData[153-1:172]
+		record["PUBLIC COMPANY 4"] = rowData[173-1:192]
+		record["PUBLIC COMPANY 5"] = rowData[193-1:212]
+		record["PUBLIC COMPANY 6"] = rowData[213-1:232]
+		record["PUBLIC COMPANY 7"] = rowData[233-1:252]
+		record["PUBLIC COMPANY 8"] = rowData[253-1:272]
+		record["PUBLIC COMPANY 9"] = rowData[273-1:292]
+		record["PUBLIC COMPANY 10"] = rowData[293-1:312]
+		record["PUBLIC COMPANY 11"] = rowData[313-1:332]
+		record["PUBLIC COMPANY 12"] = rowData[333-1:352]
+		record["PUBLIC COMPANY 1"] = rowData[353-1:372]
+		record["PUBLIC COMPANY 2"] = rowData[373-1:392]
+		record["PUBLIC COMPANY 3"] = rowData[393-1:412]
+		record["PUBLIC COMPANY 4"] = rowData[413-1:432]
+		record["PUBLIC COMPANY 5"] = rowData[433-1:352]
+		record["PUBLIC COMPANY 6"] = rowData[453-1:472]
+		record["PUBLIC COMPANY 7"] = rowData[473-1:492]
+		record["PUBLIC COMPANY 8"] = rowData[493-1:512]
+		record["PUBLIC COMPANY 9"] = rowData[513-1:532]
+		record["PUBLIC COMPANY 10"] = rowData[533-1:552]
+		record["PUBLIC COMPANY 11"] = rowData[553-1:572]
+		record["PUBLIC COMPANY 12"] = rowData[573-1:592]
+
+            
+    elif rowType == "11D":
+        # Row type: 11D - COMPLIANCE RECORD, TEMPORARY ADDRESS SEGMENT 
+        rowType = "COMPLIANCE RECORD, TEMPORARY ADDRESS SEGMENT"
+		record["SEGMENT D"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[49-1]
+		record["TEMP ADDRESS START DATE"] = rowData[52-1:59]
+		record["TEMP ADDRESS END DATE"] = rowData[60-1:67]
+		record["TEMP ADDRESS ANNUAL CYCLE"] = rowData[68-1]
+		record["SOC. SEC. # HOLDER - N/A LINE POINTER"] = rowData[69-1]
+		record["SECOND LINE PAYEE - N/A LINE POINTER"] = rowData[70-1]
+		record["MAILING ADDRESS - N/A LINE POINTER"] = rowData[71-1]
+		record["CITY NAME - N/A LINE POINTER"] = rowData[72-1]
+		record["TEMP ADDRESS ZIP CODE / CAN POSTAL CODE"] = rowData[73-1:81]
+		record["TEMP ADDRESS ZIP CODE DELIVERY POINT"] = rowData[82-1:84]
+		record["TEMP ADDRESS BYPASS ZIP+4"] = rowData[85-1]
+		record["PORTFOLIO MARGIN AGREEMENT"] = rowData[86-1]
+		record["NON MEMBER AFFILIATE"] = rowData[87-1]
+		record["NON TRANSACTION BASED COMPENSATION"] = rowData[88-1]
+		record["DOL"] = rowData[89-1]
+		record["PRTE"] = rowData[90-1]
+		record["SELF-DIRECT"] = rowData[91-1]
+		record["LEI"] = rowData[92-1:111]
+		record["MBS EXEMPT"] = rowData[112-1]
+		record["FUTURE USE"] = rowData[113-1:181]
+		record["PRIME BROKER NUMBER"] = rowData[182-1:185]
+		record["NUMBER OF TEMP ADDRESS N/A LINES"] = rowData[186-1]
+		record["TEMP ADDRESS N/A LINE 1"] = rowData[14216-1]
+		record["TEMP ADDRESS N/A LINE 2"] = rowData[217-1:246]
+		record["TEMP ADDRESS N/A LINE 3"] = rowData[247-1:276]
+		record["TEMP ADDRESS N/A LINE 4"] = rowData[277-1:306]
+		record["TEMP ADDRESS N/A LINE 5"] = rowData[307-1:336]
+        record["TEMP ADDRESS N/A LINE 6"] = rowData[337-1:366]
+
+            
+    elif rowType == "11E":
+        # Row type: 11E - COMPLIANCE RECORD, MANAGED ACCOUNT SEGMENT
+        rowType = "COMPLIANCE RECORD, MANAGED ACCOUNT SEGMENT"
+		record["SEGMENT E"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["MANAGED ACCT PRODUCT CODE"] = rowData[52-1:54]
+		record["MANAGED ACCT PREVIOUS PRODUCT CODE"] = rowData[53-1:55]
+		record["DATE MANAGED ACCOUNT OPENED"] = rowData[56-1:65]
+		record["DATE MANAGED ACCOUNT CLOSED"] = rowData[66-1:73]
+		record["DATE MANAGED ACCOUNT CHANGED"] = rowData[74-1:81]
+		record["DISCRETIONARY"] = rowData[82-1]
+		record["STYLE CODE"] = rowData[83-1:88]
+		record["PROXY"] = rowData[89-1]
+		record["TAX"] = rowData[90-1]
+		record["REBALANCING CODE"] = rowData[91-1:92]
+		record["MONEY MANAGER DTC CONFIRM"] = rowData[93-1]
+		record["DAILY CLIENT CONFIRM"] = rowData[94-1]
+		record["MONEY MANAGER DUPLICATE CONFIRM"] = rowData[95-1]
+		record["MONEY MANAGER DUPLICATE STATEMENT"] = rowData[96-1]
+		record["ADVISE/WELCOME LETTER"] = rowData[97-1]
+		record["OUTSIDE CUSTODY FIRM NAME"] = rowData[98-1:117]
+		record["MANAGED ACCT FREE TEXT LINE 1"] = rowData[118-1:147]
+		record["MANAGED ACCT FREE TEXT LINE 2"] = rowData[148-1:177]
+		record["OUTSIDE CUSTODY"] = rowData[178-1]
+		record["PLAN ID"] = rowData[179-1:188]
+		record["FILLER"] = rowData[189-1:197]
+		record["ANNIVERSARY DATE"] = rowData[198-1:205]
+		record["BLOCK ORDER"] = rowData[206-1]
+		record["BLOCK ORDER START DATE"] = rowData[16214-1]
+		record["BLOCK ORDER STOP DATE"] = rowData[215-1:222]
+		record["PREFORMANCE REPORTING"] = rowData[223-1]
+		record["PREFORMANCE REPORTING START DATE"] = rowData[224-1:231]
+		record["PREFORMANCE REPORTING STOP DATE"] = rowData[232-1:239]
+		record["MONTHLY CONFIRM REPORTING"] = rowData[240-1]
+		record["MONTHLY CONFIRM REPORTING START DATE"] = rowData[241-1:248]
+		record["MONTHLY CONFIRM REPORTING STOP DATE"] = rowData[249-1:256]
+		record["CLIENT BILLING"] = rowData[257-1]
+		record["CLIENT BILLING START DATE"] = rowData[258-1:265]
+		record["CLIENT BILLING STOP DATE"] = rowData[266-1:273]
+		record["MANAGED ACCT FEE"] = rowData[274-1]
+		record["MANAGED ACCT COMMISSION"] = rowData[275-1]
+		record["MANAGED ACCT FIXED RATE"] = rowData[276-1]
+		record["MANAGED ACCT FIXED RATE PERCENTAGE"] = rowData[277-1:281]
+		record["MANAGED ACCT ANNUAL FLAT FEE AMOUNT"] = rowData[282-1:288]
+		record["MANAGED ACCT ANNUAL MINIMUM AMOUNT"] = rowData[289-1:303]
+		record["MODEL CODE"] = rowData[304-1:309]
+		record["PERFORMANCE REPORT TITLE"] = rowData[310-1:371]
+		record["FILLER"] = rowData[372-1]
+		record["BENCHMARK POLICY CODE #1"] = rowData[373-1:378]
+		record["BENCHMARK POLICY PERCENT #1"] = rowData[379-1:383]
+		record["BENCHMARK 2ND S1 CODE #1"] = rowData[384-1:389]
+		record["BENCHMARK 2ND S1 PERCENT #1"] = rowData[390-1:394]
+		record["BENCHMARK TERTIARY CODE #1"] = rowData[395-1:400]
+		record["BENCHMARK TERTIARY PERCENT #1"] = rowData[401-1:405]
+		record["BENCHMARK POLICY CODE #2"] = rowData[406-1:411]
+		record["BENCHMARK POLICY PERCENT #2"] = rowData[412-1:416]
+		record["BENCHMARK 2ND S1 CODE #2"] = rowData[417-1:422]
+		record["BENCHMARK 2ND S1 PERCENT #2"] = rowData[423-1:427]
+		record["BENCHMARK TERTIARY CODE #2"] = rowData[428-1:433]
+		record["BENCHMARK TERTIARY PERCENT #2"] = rowData[434-1:438]
+		record["BENCHMARK POLICY CODE #3"] = rowData[439-1:444]
+		record["BENCHMARK POLICY PERCENT #3"] = rowData[445-1:449]
+		record["BENCHMARK 2ND S1 CODE #3"] = rowData[450-1:455]
+		record["BENCHMARK 2ND S1 PERCENT #3"] = rowData[456-1:460]
+		record["BENCHMARK TERTIARY CODE #3"] = rowData[461-1:466]
+		record["BENCHMARK TERTIARY PERCENT #3"] = rowData[467-1:471]
+		record["BENCHMARK POLICY CODE #4"] = rowData[472-1:477]
+		record["BENCHMARK POLICY PERCENT #4"] = rowData[478-1:482]
+		record["BENCHMARK 2ND S1 CODE #4"] = rowData[483-1:488]
+		record["BENCHMARK 2ND S1 PERCENT #4"] = rowData[489-1:493]
+		record["BENCHMARK TERTIARY CODE #4"] = rowData[494-1:499]
+		record["BENCHMARK TERTIARY PERCENT #4"] = rowData[500-1:504]
+		record["BENCHMARK POLICY CODE #5"] = rowData[505-1:510]
+		record["BENCHMARK POLICY PERCENT #5"] = rowData[511-1:515]
+		record["BENCHMARK 2ND S1 CODE #5"] = rowData[516-1:521]
+		record["BENCHMARK 2ND S1 PERCENT #5"] = rowData[522-1:526]
+		record["BENCHMARK TERTIARY CODE #5"] = rowData[527-1:532]
+		record["BENCHMARK TERTIARY PERCENT #5"] = rowData[533-1:538]
+		record["BENCHMARK POLICY CODE #6"] = rowData[539-1:544]
+		record["BENCHMARK POLICY PERCENT #6"] = rowData[545-1:549]
+		record["BENCHMARK 2ND S1 CODE #6"] = rowData[550-1:555]
+		record["BENCHMARK 2ND S1 PERCENT #6"] = rowData[556-1:560]
+		record["BENCHMARK TERTIARY CODE #6"] = rowData[561-1:566]
+		record["BENCHMARK TERTIARY PERCENT #6"] = rowData[567-1:571]
+		record["BENCHMARK POLICY CODE #7"] = rowData[572-1:577]
+		record["BENCHMARK POLICY PERCENT #7"] = rowData[578-1:582]
+		record["BENCHMARK 2ND S1 CODE #7"] = rowData[583-1:588]
+		record["BENCHMARK 2ND S1 PERCENT #7"] = rowData[589-1:593]
+		record["BENCHMARK TERTIARY CODE #7"] = rowData[594-1:599]
+		record["BENCHMARK TERTIARY PERCENT #7"] = rowData[600-1:604]
+		record["BENCHMARK POLICY CODE #8"] = rowData[605-1:610]
+		record["BENCHMARK POLICY PERCENT #8"] = rowData[611-1:615]
+		record["BENCHMARK 2ND S1 CODE #8"] = rowData[616-1:621]
+		record["BENCHMARK 2ND S1 PERCENT #8"] = rowData[622-1:626]
+		record["BENCHMARK TERTIARY CODE #8"] = rowData[627-1:632]
+		record["BENCHMARK TERTIARY PERCENT #8"] = rowData[633-1:637]
+		record["BENCHMARK CHANGE DATE"] = rowData[638-1:645]
+		record["PERFORMANCE REPORT TYPE CODE"] = rowData[645-1]
+		record["RISK/RETURN ANALYSIS"] = rowData[646-1]
+		record["OPEN HOLDINGS REPORT CODE"] = rowData[647-1]
+		record["GAIN/LOSS REPORT CODE"] = rowData[648-1]
+		record["HARD COPY DELIVERY"] = rowData[649-1]
+		record["CHOICE CHANGE DATE"] = rowData[650-1:657]
+		record["MANAGED ACCT PRODUCT DESCRIPTION"] = rowData[658-1:687]
+		record["ADVISORY PROFILE"] = rowData[688-1]
+		record["ADVISORY PROFILE TEXT"] = rowData[689-1:713]
+		record["MANAGED ACCT SECTOR MAX"] = rowData[714-1]
+		record["MANAGED ACCT SECTOR MAX DATE"] = rowData[715-1:722]
+		record["MANAGED ACCT SECTOR MAX DESCRIPTION"] = rowData[723-1:752]
+		record["MANAGED ACCT SECTOR MAX PERCENT OVERRIDE"] = rowData[753-1:755]
+		record["(+/-)"] = rowData[756-1]
+		record["MANAGED ACCT OPTION EXCEPTION"] = rowData[757-1]
+		record["MANAGED ACCT OPTION EXCEPTION DATE"] = rowData[758-1:765]
+		record["MANAGED ACCT OPTION EXCEPTION DESCRIPTION"] = rowData[766-1:795]
+		record["MANAGED ACCT OPTION EXCEPTION PERCENT OVERRIDE"] = rowData[796-1:798]
+		record["(+/-)"] = rowData[799-1]
+		record["MANAGED ACCT MARGIN EXCEPTION"] = rowData[800-1]
+		record["MANAGED ACCT MARGIN EXCEPTION DATE"] = rowData[801-1:808]
+		record["MANAGED ACCT MARGIN EXCEPTION DESCRIPTION"] = rowData[809-1:838]
+		record["MANAGED ACCT MARGIN EXCEPTION PERCENT OVERRIDE"] = rowData[839-1:841]
+		record["(+/-)"] = rowData[842-1]
+		record["MANAGED ACCT NEG AC EXCEPTION"] = rowData[843-1]
+		record["MANAGED ACCT NEG AC EXCEPTION DATE"] = rowData[844-1:851]
+		record["MANAGED ACCT NEG AC EXCEPTION DESCRIPTION"] = rowData[852-1:881]
+		record["MANAGED ACCT NEG AC EXCEPTION PERCENT OVERRIDE"] = rowData[882-1:884]
+		record["(+/-)"] = rowData[885-1]
+		record["MANAGED ACCT NEG SECTOR EXCEPTION"] = rowData[886-1]
+		record["MANAGED ACCT NEG SECTOR EXCEPTION DATE"] = rowData[887-1:894]
+		record["MANAGED ACCT NEG SECTOR EXCEPTION DESCRIPTION"] = rowData[895-1:924]
+		record["MANAGED ACCT NEG SECTOR EXCEPTION PERCENT OVERRIDE"] = rowData[925-1:927]
+		record["(+/-)"] = rowData[928-1]
+		record["MANAGED ACCT MAX EXPOSURE"] = rowData[929-1]
+		record["MANAGED ACCT MAX EXPOSURE DESCRIPTION"] = rowData[938-1:967]
+		record["MANAGED ACCT MAX EXPOSURE PERCENT OVERRIDE"] = rowData[968-1:970]
+		record["(+/-)"] = rowData[971-1]
+		record["MANAGED ACCT 105% ASSET CLASS"] = rowData[972-1]
+		record["MANAGED ACCT 105% ASSET CLASS DATE"] = rowData[973-1:980]
+		record["MANAGED ACCT 105% ASSET CLASS DESCRIPTION"] = rowData[981-1:1010]
+		record["MANAGED ACCT 105% ASSET CLASS PERCENT OVERRIDE"] = rowData[1011-1:1013]
+		record["(+/-)"] = rowData[1014-1]
+		record["MANAGED ACCT MAX FEE EXCEPTION"] = rowData[1015-1]
+		record["MANAGED ACCT MAX FEE EXCEPTION DATE"] = rowData[1016-1:1023]
+		record["MANAGED ACCT MAX FEE EXCEPTION DESCRIPTION"] = rowData[1024-1:1053]
+		record["MANAGED ACCT MAX FEE EXCEPTION PERCENT OVERRIDE"] = rowData[1054-1:1056]
+		record["(+/-)"] = rowData[1057-1]
+		record["MANAGED ACCT CASH EXCEPTION"] = rowData[1058-1]
+		record["MANAGED ACCT CASH EXCEPTION DATE"] = rowData[1059-1:1066]
+		record["MANAGED ACCT CASH EXCEPTION DESCRIPTION"] = rowData[1067-1:1096]
+		record["MANAGED ACCT CASH EXCEPTION PERCENT OVERRIDE"] = rowData[1097-1:1099]
+		record["(+/-)"] = rowData[1100-1]
+		record["MANAGED ACCT SLOT ID"] = rowData[1101-1:1103]
+		record["MANAGED ACCT RISK CODE"] = rowData[1104-1]
+		record["MANAGED APL"] = rowData[1105-1]
+		record["APL START FEED DATE"] = rowData[1106-1:1113]
+		record["APL END FEED DATE"] = rowData[1114-1:1121]
+		record["FILLER"] = rowData[1122-1:1216]
+
+            
+    elif rowType == "11F":
+        # Row type: 11F - COMPLIANCE RECORD, MANAGED ACCOUNT SEGMENT
+        rowType = "tofill"
+		record["SEGMENT F"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["MANAGED ACCT RESTRICTION TEXT LINE 1"] = rowData[52-1:108]
+		record["MANAGED ACCT RESTRICTION TEXT LINE 2"] = rowData[109-1:185]
+		record["MANAGED ACCT RISK SCORE TEXT LINE 1"] = rowData[186-1:252]
+		record["MANAGED ACCT RISK SCORE TEXT LINE 2"] = rowData[253-1:319]
+		record["NOSTRO CURRENCY CODE"] = rowData[320-1:322]
+		record["NOSTRO TYPE"] = rowData[323-1]
+		record["NOSTRO EXTERNAL AGENT LEGAL ID"] = rowData[324-1:343]
+		record["NOSTRO INTERNAL ID FOR THE EXTERNAL AGENT"] = rowData[344-1:363]
+		record["NOSTRO INTERNAL ACCOUNT LEGAL ID"] = rowData[364-1:383]
+		record["NOSTRO ASSET TYPE"] = rowData[384-1]
+		record["NOSTRO LAST CHANGE DATE FROM SCREEN NSTR"] = rowData[385-1:392]
+		record["NOSTRO LAST CHANGE TIME FROM SCREEN NSTR"] = rowData[393-1:398]
+		record["NOSTRO LAST CHANGE TERM ID"] = rowData[399-1:402]
+		record["INVESTMENT KNOWLEDGE"] = rowData[403-1:404]
+		record["INVESTMENT KNOWLEDGE CHANGE DATE"] = rowData[405-1:412]
+		record["JOINT INVESTMENT KNOWLEDGE"] = rowData[413-1:414]
+		record["JOINT INVESTMENT KNOWLEDGE CHANGE DATE"] = rowData[415-1:422]
+		record["JOINT INCOME LEVEL"] = rowData[423-1:424]
+		record["JOINT INCOME LEVEL CHANGE DATE"] = rowData[425-1:432]
+		record["JOINT NET WORTH"] = rowData[433-1:434]
+		record["JOINT NET WORTH CHANGE DATE"] = rowData[435-1:442]
+		record["ACCOUNT APPROVED (Y/N)"] = rowData[443-1]
+		record["ACCOUNT APPROVED CHANGE DATE"] = rowData[444-1:451]
+		record["APPROVER ID"] = rowData[452-1:456]
+        record["FILLER"] = rowData[457-1:606]
+
+            
+    elif rowType == "11G":
+        # Row type: 11G - COMPLIANCE RECORD, FATCA AND CAT SEGMNET
+        rowType = "COMPLIANCE RECORD, FATCA AND CAT SEGMNET"
+		record["SEGMEN G"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[45739-1]
+		record["PRIMARY HOLDERS COUNTRY OF BIRTH"] = rowData[45862-1]
+		record["JOINT HOLDERS COUNTRY OF BIRTH"] = rowData[45957-1]
+		record["PRIMARY HOLDERS COUNTRY OF CITIZENSHIP"] = rowData[46051-1]
+		record["JOINT HOLDERS COUNTRY OF CITIZENSHIP"] = rowData[61-1:63]
+		record["PRIMARY HOLDERS COUNTRY OF DUAL CITIZENSHIP"] = rowData[64-1:66]
+		record["JOINT HOLDERS COUNTRY OF DUAL CITIZENSHIP"] = rowData[67-1:69]
+		record["FATCA TYPE"] = rowData[70-1:73]
+		record["FATCA SUB-TYPE"] = rowData[74-1:77]
+		record["FATCA ID"] = rowData[78-1:94]
+		record["FATCA FORM 8966"] = rowData[95-1]
+		record["FATCA-FORM-8966-STRT-DT"] = rowData[96-1:103]
+		record["FATCA-FORM-8966-END-DT"] = rowData[104-1:111]
+		record["FUTURE USE"] = rowData[112-1:127]
+		record["FATCA FLOW THRU ENTITY"] = rowData[128-1:131]
+		record["FATCA FFI AGREEMENT EFFECTIVE DATE"] = rowData[132-1:147]
+		record["FATCA FFI AGREEMENT EXPIRATION DATE"] = rowData[140-1:147]
+		record["FATCA FFI EIN"] = rowData[148-1:156]
+		record["FATCA FOREIGN TAX ID"] = rowData[11181-1]
+		record["FATCA COUNTRY OF FOREIGN TAX ID"] = rowData[182-1:184]
+		record["FATCA WITHHOLD"] = rowData[185-1]
+		record["FATCA CERTIFICATION STATUS"] = rowData[186-1:187]
+		record["FATCA CERTIFICATION COMPLETION DATE"] = rowData[188-1:195]
+		record["FATCA CERTIFICATION EXPIRATION DATE"] = rowData[196-1:203]
+		record["FATCA CERTIFICATION RENEWAL DATE"] = rowData[204-1:211]
+		record["FATCA CERTIFICATION TYPE"] = rowData[212-1:213]
+		record["FATCA CERTIFICATION MEANS"] = rowData[214-1:263]
+		record["FATCA CERTIFICATION REVIEWER"] = rowData[264-1:293]
+		record["FATCA INDICIA COMPLETE DATE"] = rowData[294-1:301]
+		record["FATCA INDICIA RETEST DATE"] = rowData[302-1:309]
+		record["FATCA DORMANT ACCT"] = rowData[310-1]
+		record["FATCA DORMANT ACCT CHANGE DATE"] = rowData[311-1:318]
+		record["FATCA RENOUNCED US CITZENSIP"] = rowData[319-1]
+		record["FATCA GIIN"] = rowData[320-1:338]
+		record["NRA WITHHELD ROY RATE"] = rowData[339-1:345]
+		record["NRA WITHHELD REIT RATE"] = rowData[346-1:352]
+		record["NRA WITHHELD MLP RATE"] = rowData[353-1:359]
+		record["NRA DROP THRU STOCK RATE"] = rowData[360-1:366]
+		record["NRA DROP THRU BOND RATE"] = rowData[367-1:373]
+		record["NRA DROP THRU ROY RATE"] = rowData[374-1:380]
+		record["NRA DROP THRU REIT RATE"] = rowData[381-1:387]
+		record["NRA DROP THRU MLP RATE"] = rowData[388-1:394]
+		record["FATCA WITHHELD OWNERSHIP"] = rowData[395-1:401]
+		record["FATCA 1042S CH3"] = rowData[402-1:403]
+		record["FATCA 1042S CH4"] = rowData[404-1:405]
+		record["NRA REIG RATE"] = rowData[406-1:412]
+		record["NRA DROP THRU REIG RATE"] = rowData[413-1:419]
+		record["FATCA 1042S LOB"] = rowData[420-1:421]
+		record["NRA STOCK EXP RATE"] = rowData[422-1:428]
+		record["NRA BOND EXP RATE"] = rowData[429-1:435]
+		record["CAT CAIS REPORTABLE"] = rowData[436-1]
+		record["CAT COUNTRY CODE"] = rowData[437-1:438]
+		record["CAT ACCOUNT TYPE-1"] = rowData[439-1]
+		record["CAT ACCOUNT TYPE-2"] = rowData[440-1]
+		record["CAT ACCOUNT TYPE-3"] = rowData[441-1]
+		record["CAT PERSON ENTITY"] = rowData[442-1]
+		record["CAT FIRST NAME"] = rowData[443-1:462]
+		record["CAT MIDDLE NAME"] = rowData[463-1:482]
+		record["CAT LAST NAME"] = rowData[483-1:502]
+		record["CAT NAME SUFFIX"] = rowData[503-1:508]
+		record["CAT ENTITY NAME"] = rowData[443-1:492]
+		record["CAT YEAR OF BIRTH"] = rowData[509-1:512]
+		record["CAT CUSTOMER ID"] = rowData[513-1:521]
+		record["CAT ROLE"] = rowData[522-1]
+		record["CAT START DATE"] = rowData[523-1:530]
+		record["CAT END DATE"] = rowData[531-1:538]
+		record["CAT REASON CODE"] = rowData[539-1]
+		record["CAT EMPLOYER IDENTIFICATION NUMBER"] = rowData[540-1:548]
+		record["CAT DISCRETION"] = rowData[549-1]
+		record["CAT CUSTOMER TYPE-1"] = rowData[550-1]
+		record["CAT CUSTOMER TYPE-2"] = rowData[551-1]
+		record["CAT CUSTOMER TYPE-3"] = rowData[552-1]
+		record["CAT DOING BUSINESS AS"] = rowData[553-1:607]
+		record["CAT LEGAL ENTITY IDENTIFIER"] = rowData[608-1:627]
+		record["CAT PERSON ENTITY"] = rowData[628-1]
+		record["CAT FIRST NAME"] = rowData[629-1:648]
+		record["CAT MIDDLE NAME"] = rowData[649-1:668]
+		record["CAT LAST NAME"] = rowData[669-1:688]
+		record["CAT NAME SUFFIX"] = rowData[689-1:694]
+		record["CAT ENTITY NAME"] = rowData[695-1:744]
+		record["CAT YEAR OF BIRTH"] = rowData[745-1:748]
+		record["CAT CUSTOMER ID"] = rowData[749-1:757]
+		record["CAT ROLE"] = rowData[758-1]
+		record["CAT START DATE"] = rowData[759-1:766]
+		record["CAT END DATE"] = rowData[767-1:774]
+		record["CAT REASON CODE"] = rowData[775-1]
+		record["CAT EMPLOYER IDENTIFICATION NUMBER"] = rowData[776-1:784]
+		record["CAT DISCRETION"] = rowData[780-1]
+		record["CAT CUSTOMER TYPE"] = rowData[785-1]
+		record["CAT CUSTOMER TYPE"] = rowData[786-1]
+		record["CAT CUSTOMER TYPE"] = rowData[787-1]
+		record["CAT DOING BUSINESS AS"] = rowData[788-1:837]
+        record["CAT LEGAL ENTITY IDENTIFIER"] = rowData[838-1:857]
+
+            
+    elif rowType == "11H":
+        # Row type: 11H - COMPLIANCE RECORD   H SEGMENT
+        rowType = "COMPLIANCE RECORD   H SEGMENT"
+		record["SEGMENT H"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:52]
+		record["TEST FIELD UNUSED"] = rowData[53-1:61]
+		record["EXPANDED EMAIL TYPE 1"] = rowData[62-1]
+		record["EXPANDED EMAIL ADDRESS 1"] = rowData[63-1:162]
+		record["EXPANDED EMAIL TYPE 2"] = rowData[163-1]
+		record["EXPANDED EMAIL ADDRESS 2"] = rowData[164-1:263]
+		record["FUTURE USE"] = rowData[264-1:806]
+            
+    elif rowType == "tofill":
+        # Row type: INTERESTED PARTY RECORD  -  BASE SEGMENT 20 00
+        rowType = "INTERESTED PARTY RECORD  -  BASE SEGMENT 20 00"
+		record["COMMON RECORD AREA (RECORD ID = 20)"] = rowData[47-1:68]
+		record["SEGMENT 00"] = rowData[69-1:70]
+		record["LENGTH OF THIS SEGMENT"] = rowData[71-1:74]
+		record["DATE RECORD ADDED"] = rowData[75-1:82]
+		record["DATE RECORD CHANGED"] = rowData[83-1:90]
+		record["I/P NUMBER - TRANSFERS"] = rowData[91-1:92]
+		record["I/P NUMBER - PROXIES"] = rowData[93-1:94]
+		record["I/P NUMBER - INCOME CHECKS"] = rowData[95-1:96]
+		record["I/P NUMBER - ONLINE CHECKWRITING"] = rowData[97-1:98]
+		record["I/P NUMBER - ID SYSTEM I/P-1"] = rowData[99-1:100]
+		record["I/P NUMBER - ID SYSTEM I/P-2"] = rowData[101-1:102]
+		record["I/P NUMBER - COD"] = rowData[103-1:104]
+		record["I/P NUMBER - COR"] = rowData[105-1:106]
+		record["FOR FUTURE USE"] = rowData[107-1:126]
+		record["NUMBER OF INTERESTED PARTY SEGMENTS AVAILABLE"] = rowData[127-1:128]
+		record["SEGMENT ID OF 1ST SEGMENT"] = rowData[129-1:130]
+		record["STARTING ADDRESS OF 1ST ADDITIONAL SEGMENT"] = rowData[131-1:134]
+		record[""SEGMENT CONTROL" AREA # 2"] = rowData[135-1:140]
+		record[""SEGMENT CONTROL" AREA # 3"] = rowData[141-1:146]
+		record[""SEGMENT CONTROL" AREA # 4"] = rowData[147-1:152]
+		record[""SEGMENT CONTROL" AREA # 5"] = rowData[153-1:158]
+		record[""SEGMENT CONTROL" AREA # 6"] = rowData[159-1:164]
+		record[""SEGMENT CONTROL" AREA # 7"] = rowData[165-1:170]
+		record[""SEGMENT CONTROL" AREA # 8"] = rowData[171-1:176]
+		record[""SEGMENT CONTROL" AREA # 9"] = rowData[177-1:182]
+		record[""SEGMENT CONTROL" AREA # 10"] = rowData[183-1:188]
+		record[""SEGMENT CONTROL" AREA # 11"] = rowData[189-1:194]
+		record[""SEGMENT CONTROL" AREA # 12"] = rowData[195-1:200]
+		record[""SEGMENT CONTROL" AREA # 13"] = rowData[201-1:206]
+		record[""SEGMENT CONTROL" AREA # 14"] = rowData[207-1:212]
+        record[""SEGMENT CONTROL" AREA # 15"] = rowData[213-1:218]
+
+            
+    elif rowType == "tofill":
+        # Row type: INTERESTED PARTY RECORD - I/P SEGMENTS 01 - 09
+        rowType = "INTERESTED PARTY RECORD - I/P SEGMENTS 01 - 09"
+		record["SEGMENT 01-15 (SEE BASE SEGMENT)"] = rowData[47-1:48]
+		record["LENGTH OF THIS SEGMENT"] = rowData[49-1:52]
+		record["DATE SEGMENT ADDED"] = rowData[53-1:60]
+		record["DATE SEGMENT CHANGED"] = rowData[61-1:68]
+		record["LANGUAGE CODE"] = rowData[69-1]
+		record["NUMBER OF CONFIRMS"] = rowData[70-1]
+		record["NUMBER OF STATEMENTS"] = rowData[71-1]
+		record["ALTERNATE TRANSFERS"] = rowData[72-1]
+		record["ALTERNATE PROXIES"] = rowData[73-1]
+		record["ALT. INCOME CHECKS"] = rowData[74-1]
+		record["ONLINE CHECKWRITING"] = rowData[75-1]
+		record["ID SYSTEM"] = rowData[76-1]
+		record["COD"] = rowData[77-1]
+		record["COR"] = rowData[78-1]
+		record["TRID (PRINT CONTROL)"] = rowData[79-1]
+		record["1099"] = rowData[80-1]
+		record["ZIP 3 (DELIVERY CODE) FOR IP FREEFORM LINES"] = rowData[81-1:83]
+		record["IP BYPASS ZIP PROCESSING"] = rowData[84-1]
+		record["IP TAG (UNIQUE IDENTIFIER)"] = rowData[85-1]
+		record["INA IP TAG (ASSIGNED BY INA)"] = rowData[86-1]
+		record["I/P ELECTRONIC CONFIRM IND"] = rowData[87-1]
+		record["I/P ELECTRONIC STATEMENT IND"] = rowData[88-1]
+		record["FOR FUTURE USE"] = rowData[89-1:98]
+		record["ROUTING OFFICE"] = rowData[99-1:103]
+		record["NUMBER OF N/A LINES"] = rowData[104-1]
+		record["N/A LINE 1"] = rowData[105-1:139]
+		record["N/A LINE 2"] = rowData[140-1:174]
+		record["N/A LINE 3"] = rowData[175-1:209]
+		record["N/A LINE 4"] = rowData[210-1:244]
+		record["N/A LINE 5"] = rowData[245-1:279]
+		record["N/A LINE 6"] = rowData[280-1:314]
+		record["N/A LINE 7"] = rowData[315-1:349]
+		record["N/A LINE 8"] = rowData[350-1:384]
+        record["N/A LINE 9"] = rowData[385-1:419]
+
+            
+    elif rowType == "tofill":
+        # Row type: INTERESTED PARTY FIXED-FIELDS RECORD - BASE SEGMENT 2100
+        rowType = "INTERESTED PARTY FIXED-FIELDS RECORD - BASE SEGMENT 2100"
+		record["COMMON RECORD AREA (RECORD ID = 21)"] = rowData[47-1:68]
+		record["SEGMENT 00"] = rowData[69-1:70]
+		record["LENGTH OF THIS SEGMENT (INCLUDES POS. 1 - 28)"] = rowData[71-1:74]
+		record["DATE RECORD ADDED"] = rowData[75-1:82]
+		record["DATE RECORD CHANGED"] = rowData[83-1:90]
+		record["I/P NUMBER - TRANSFERS"] = rowData[91-1:92]
+		record["I/P NUMBER - PROXIES"] = rowData[93-1:94]
+		record["I/P NUMBER - INCOME CHECKS"] = rowData[95-1:96]
+		record["I/P NUMBER - ONLINE CHECKWRITING"] = rowData[97-1:98]
+		record["I/P NUMBER - ID SYSTEM I/P-1"] = rowData[99-1:100]
+		record["I/P NUMBER - ID SYSTEM I/P-2"] = rowData[101-1:102]
+		record["08 CAN RESIDE"] = rowData[103-1:104]
+		record["I/P NUMBER - COR ---------------"] = rowData[105-1:106]
+		record["FOR FUTURE USE"] = rowData[107-1:126]
+		record["NUMBER OF INTERESTED PARTY SEGMENTS AVAILABLE"] = rowData[127-1:128]
+		record["SEGMENT ID OF 1ST SEGMENT"] = rowData[129-1:130]
+		record["STARTING ADDRESS OF 1ST ADDITIONAL SEGMENT"] = rowData[131-1:134]
+		record[""SEGMENT CONTROL" AREA # 2"] = rowData[135-1:140]
+		record[""SEGMENT CONTROL" AREA # 3"] = rowData[141-1:146]
+		record[""SEGMENT CONTROL" AREA # 4"] = rowData[147-1:152]
+		record[""SEGMENT CONTROL" AREA # 5"] = rowData[153-1:158]
+		record[""SEGMENT CONTROL" AREA # 6"] = rowData[159-1:164]
+		record[""SEGMENT CONTROL" AREA # 7"] = rowData[165-1:170]
+		record[""SEGMENT CONTROL" AREA # 8"] = rowData[171-1:176]
+		record[""SEGMENT CONTROL" AREA # 9"] = rowData[177-1:182]
+		record[""SEGMENT CONTROL" AREA # 10"] = rowData[183-1:188]
+		record[""SEGMENT CONTROL" AREA # 11"] = rowData[189-1:194]
+		record[""SEGMENT CONTROL" AREA # 12"] = rowData[195-1:200]
+		record[""SEGMENT CONTROL" AREA # 13"] = rowData[201-1:206]
+		record[""SEGMENT CONTROL" AREA # 14"] = rowData[207-1:212]
+        record[""SEGMENT CONTROL" AREA # 15"] = rowData[213-1:218]
+
+            
+    elif rowType == "tofill":
+        # Row type: INTERESTED PARTY FIXED-FIELDS RECORD - I/P SEGMENTS 01-09
+        rowType = "INTERESTED PARTY FIXED-FIELDS RECORD - I/P SEGMENTS 01-09"
+		record["SEGMENT 01-15"] = rowData[47-1:48]
+		record["LENGTH OF THIS SEGMENT"] = rowData[49-1:52]
+		record["BAS CODE"] = rowData[53-1]
+		record["BASE NUMBER"] = rowData[54-1:58]
+		record["CUSTOMER NUMBER"] = rowData[59-1:70]
+		record["ADDRESS LOCATION CODE (ALC)"] = rowData[71-1:73]
+		record["DTC CODE (CLEARING HOUSE NUMBER)"] = rowData[74-1:78]
+		record["PARTICIPANT NUMBER"] = rowData[79-1:83]
+		record["NAME"] = rowData[84-1]
+		record["FIRST NAME"] = rowData[85-1:104]
+		record["MIDDLE INITIAL"] = rowData[105-1]
+		record["LAST NAME"] = rowData[106-1:125]
+		record["COMPANY NAME"] = rowData[85-1:119]
+		record["NOT USED WHEN COMPANY NAME IS USED"] = rowData[120-1:125]
+		record["TITLE/PREFIX"] = rowData[126-1:133]
+		record["APARTMENT/SUITE"] = rowData[164-1:168]
+		record["CITY"] = rowData[169-1:197]
+		record["STATE CODE"] = rowData[198-1:199]
+		record["ZIP 5 CODE"] = rowData[200-1:204]
+		record["ZIP 4 CODE"] = rowData[205-1:208]
+		record["ZIP DELIVERY POINT"] = rowData[209-1:211]
+		record["GEO CODE"] = rowData[212-1:214]
+		record["CANADIAN POSTAL CODE"] = rowData[215-1:220]
+		record["CANADIAN POSTAL CODE + 4"] = rowData[221-1:224]
+		record["FOREIGN POSTAL CODE"] = rowData[225-1:234]
+		record["FOREIGN COUNTRY NAME"] = rowData[235-1:254]
+		record["TELEX / FAX / SWIFT INDICATOR"] = rowData[255-1]
+		record["TELEX / FAX / SWIFT IDENFICATION"] = rowData[256-1:279]
+		record["TELEX / FAX / ADDRESSING INFO LINE 1"] = rowData[280-1:309]
+		record["TELEX / FAX / ADDRESSING INFO LINE 2"] = rowData[310-1:339]
+		record["INTERESTED PARTY HOUSE HOLDING CODE"] = rowData[340-1:343]
+		record["FUTURE USE"] = rowData[344-1:348]
+
+            
+    elif rowType == "30A":
+        # Row type: 30A - PROVIDENT BANK ACM RECORD, BASE SEGMENT
+        rowType = "PROVIDENT BANK ACM RECORD, BASE SEGMENT"
+		record["COMMON RECORD AREA (RECORD ID = 30)"] = rowData[47-1]
+		record["SEGMENT A"] = rowData[69-1]
+		record["LENGTH OF THIS SEGMENT (INCLUDES POS. 1 - 27)"] = rowData[70-1:73]
+		record["DATE RECORD ADDED"] = rowData[74-1:81]
+		record["DATE RECORD CHANGED"] = rowData[82-1:89]
+		record["PROV. BANK ACCOUNT NUMBER"] = rowData[90-1:98]
+		record["PROV. BANK CHECK DIGIT (MOD-11)"] = rowData[99-1]
+		record["DATE ACCOUNT WAS OPENED"] = rowData[100-1:107]
+		record["DATE ACCOUNT WAS CLOSED"] = rowData[108-1:115]
+		record["REASON ACCOUNT WAS CLOSED"] = rowData[116-1]
+		record["REINSTATEMENT CODE"] = rowData[117-1]
+		record["PROV. BANK ACCOUNT TYPE"] = rowData[118-1]
+		record["PROV. BANK PRODUCT CODE"] = rowData[119-1]
+		record["CHECK STYLE CODE"] = rowData[120-1]
+		record["MULTI-SIGNERS CODE"] = rowData[121-1]
+		record["CHECK COVER CODE"] = rowData[122-1]
+		record["CLIENT ADDRESS ON CHECKS CODE"] = rowData[123-1]
+		record["CREDIT LINE"] = rowData[124-1:133]
+		record["N/A LINE 1 - ACCOUNT NAME-1 (TITLE LINE-1)"] = rowData[134-1:163]
+		record["N/A LINE 2 - ACCOUNT NAME-2 (TITLE LINE-2)"] = rowData[164-1:193]
+		record["N/A LINE 3 - ADDRESS-1"] = rowData[194-1:223]
+		record["N/A LINE 4 - ADDRESS-2"] = rowData[224-1:253]
+		record["N/A LINE 5 - ADDRESS-3"] = rowData[254-1:283]
+		record["ZIP CODE"] = rowData[284-1:292]
+		record["FOREIGN ACCOUNT ID"] = rowData[293-1]
+		record["BUSINESS PHONE"] = rowData[294-1:303]
+		record["HOME PHONE"] = rowData[304-1:313]
+		record["OLD ADP BRANCH NUMBER (SWING ACCOUNTS)"] = rowData[314-1:318]
+		record["OLD ADP ACCOUNT NUMBER (SWING ACCOUNTS)"] = rowData[319-1:328]
+		record["OLD ACM CODE (FROM P/P BASE SEGMENT)"] = rowData[329-1]
+		record["CSFUND (FOR 99 FUNDS - BINARY)"] = rowData[330-1]
+		record["TRID (PRINT CONTROL)"] = rowData[331-1]
+		record["WAIVE FEE"] = rowData[332-1]
+		record["USE REDUCED B1 FEE"] = rowData[333-1]
+		record["NAME 1"] = rowData[334-1]
+		record["STARTING POSITION OF SURNAME IN NAME 1 FIELD"] = rowData[335-1:336]
+		record["LENGTH OF SURNAME IN NAME 1 FIELD"] = rowData[337-1:338]
+		record["NAME 2"] = rowData[339-1]
+		record["STARTING POSITION OF SURNAME IN NAME 2 FIELD"] = rowData[340-1:341]
+		record["LENGTH OF SURNAME IN NAME 2 FIELD"] = rowData[342-1:343]
+		record["UPDATE SOURCE(SYSTEM USE)"] = rowData[344-1]
+		record["SWUNG TO ACCOUNT"] = rowData[345-1:352]
+		record["NUMBER OF ADDITIONAL SEGMENTS"] = rowData[353-1:354]
+		record["SEGMENT ID OF 1ST SEGMENT"] = rowData[355-1]
+		record["STARTING ADDRESS OF 1ST ADDITIONAL SEGMENT"] = rowData[356-1:359]
+        record["STARTING ADDRESS OF 2ND ADDITIONAL SEGMENT"] = rowData[360-1:364]
+
+            
+    elif rowType == "30B":
+        # Row type: 30B - PROVIDENT BANK ACM RECORD, FIXED N/A FIELDS
+        rowType = "PROVIDENT BANK ACM RECORD, FIXED N/A FIELDS"
+		record["SEGMENT B"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["NAME 1"] = rowData[52-1]
+		record["FIRST NAME"] = rowData[53-1:72]
+		record["MIDDLE INITIAL"] = rowData[73-1]
+		record["LAST NAME"] = rowData[74-1:93]
+		record["COMPANY NAME"] = rowData[15204-1]
+		record["NOT USED WHEN COMPANY NAME IS USED"] = rowData[88-1:93]
+		record["TITLE PREFIX"] = rowData[94-1:97]
+		record["TITLE SUFFIX"] = rowData[98-1:101]
+		record["FILLER"] = rowData[102-1:116]
+		record["NAME 2"] = rowData[117-1]
+		record["FIRST NAME"] = rowData[118-1:137]
+		record["MIDDLE INITIAL"] = rowData[138-1]
+		record["LAST NAME"] = rowData[139-1:158]
+		record["COMPANY NAME"] = rowData[118-1:152]
+		record["NOT USED WHEN COMPANY NAME IS USED"] = rowData[153-1:158]
+		record["TITLE PREFIX"] = rowData[159-1:162]
+		record["TITLE SUFFIX"] = rowData[163-1:166]
+		record["FILLER"] = rowData[167-1:186]
+		record["NUMBER OF ADDITIONAL NAMES"] = rowData[187-1:188]
+		record["NAME 3"] = rowData[189-1]
+		record["FIRST NAME"] = rowData[190-1:209]
+		record["MIDDLE INITIAL"] = rowData[210-1]
+		record["LAST NAME"] = rowData[211-1:230]
+		record["COMPANY NAME"] = rowData[190-1:224]
+		record["NOT USED WHEN COMPANY NAME IS USED"] = rowData[225-1:230]
+		record["TITLE PREFIX"] = rowData[231-1:234]
+		record["TITLE SUFFIX"] = rowData[235-1:238]
+		record["FILLER"] = rowData[239-1:253]
+		record["NAME 4"] = rowData[254-1]
+		record["FIRST NAME"] = rowData[255-1:274]
+		record["MIDDLE INITIAL"] = rowData[275-1]
+		record["LAST NAME"] = rowData[276-1:295]
+		record["COMPANY NAME"] = rowData[255-1:289]
+		record["NOT USED WHEN COMPANY NAME IS USED"] = rowData[290-1:295]
+		record["TITLE PREFIX"] = rowData[296-1:299]
+		record["TITLE SUFFIX"] = rowData[300-1:303]
+		record["STARTING POSITION OF LAST NAME WHEN"] = rowData[304-1:305]
+		record["LENGTH OF LAST NAME WHEN"] = rowData[306-1:307]
+        record["FILLER"] = rowData[308-1:318]
+
+            
+    elif rowType == "30C":
+        # Row type: 30C - PROVIDENT BANK ACM RECORD, DEBIT SEGMENT
+        rowType = "PROVIDENT BANK ACM RECORD, DEBIT SEGMENT"
+        record["SEGMENT C"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[45739-1]
+		record["CHECKING ACCOUNT STATUS"] = rowData[52-1]
+		record["DATE CHECKING APPROVED"] = rowData[45898-1]
+		record["DATE CHECKING CLOSED"] = rowData[61-1:68]
+		record["DATE CHECKING REINSTATED"] = rowData[69-1:76]
+		record["FILLER"] = rowData[77-1:86]
+		record["DEBIT ACCOUNT STATUS"] = rowData[87-1]
+		record["DATE DEBIT ACCOUNT APPROVED"] = rowData[88-1:95]
+		record["DATE DEBIT ACCOUNT CLOSED"] = rowData[96-1:103]
+		record["DATE DEBIT ACCOUNT REINSTATED"] = rowData[104-1:111]
+		record["FILLER"] = rowData[112-1:121]
+		record["DEBIT CARD NUMBER"] = rowData[122-1:137]
+		record["FILLER"] = rowData[138-1:141]
+		record["DEBIT CARD EXPIRATION DATE"] = rowData[142-1:149]
+		record["# DEBIT CARDS UNDER PRIMARY NAME"] = rowData[150-1:151]
+		record["# DEBIT CARDS UNDER SECONDARY NAME"] = rowData[152-1:153]
+		record["ACH INDICATOR"] = rowData[154-1]
+		record["NIS BANK ACCOUNT TYPE"] = rowData[155-1:156]
+		record["SEND TO FISERV"] = rowData[157-1]
+		record["SEND TO DELUXE"] = rowData[158-1]
+		record["SEND TO EDS"] = rowData[159-1]
+		record["PNC CARD TYPE"] = rowData[160-1]
+		record["CHKBOOK"] = rowData[161-1]
+		record["OLD EXP FUND NBR"] = rowData[162-1:165]
+        record["FILLER"] = rowData[166-1:209]
+
+            
+    elif rowType == "35A":
+        # Row type: 35A - AAA RECORD, GENERAL INFO SEGMENT
+        rowType = "AAA RECORD, GENERAL INFO SEGMENT"
+		record["COMMON RECORD AREA (RECORD ID = 35)"] = rowData[47-1:68]
+		record["SEGMENT A"] = rowData[69-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[70-1:73]
+		record["AAA ACCOUNT STATUS"] = rowData[74-1]
+		record["AAA OPEN DATE"] = rowData[75-1:82]
+		record["AAA CLOSE DATE"] = rowData[83-1:90]
+		record["AAA REINSTATE DATE"] = rowData[91-1:98]
+		record["AAA BANK BALANCE"] = rowData[99-1:109]
+		record["AAA FEE OVERRIDE AMOUNT"] = rowData[110-1:115]
+		record["AAA SECURITY ID - FREE TEXT"] = rowData[116-1:160]
+		record["AAA NOTES"] = rowData[161-1:215]
+		record["FILLER"] = rowData[216-1:447]
+		record["NUMBER OF ADDITIONAL SEGMENTS"] = rowData[448-1:449]
+		record["SEGMENT ID OF 1ST SEGMENT"] = rowData[450-1]
+		record["STARTING ADDRESS OF 1ST ADDITIONAL SEGMENT"] = rowData[451-1:454]
+		record[""SEGMENT CONTROL" AREA # 2"] = rowData[455-1:459]
+		record[""SEGMENT CONTROL" AREA # 3"] = rowData[460-1:464]
+		record[""SEGMENT CONTROL" AREA # 4"] = rowData[465-1:469]
+        record[""SEGMENT CONTROL" AREA # 5"] = rowData[470-1:474]
+
+            
+    elif rowType == "35B":
+        # Row type: 35B - AAA RECORD, CARD INFO SEGMENT
+        rowType = "AAA RECORD, CARD INFO SEGMENT"
+		record["SEGMENT B"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["RESERVED FOR SYSTEM USE"] = rowData[52-1:66]
+		record["NUMBER OF CARDS 01-10"] = rowData[67-1:68]
+		record["CARD TYPE CODE"] = rowData[69-1:71]
+		record["CARD BANK STATUS CODE"] = rowData[72-1:73]
+		record["CARD NUMBER"] = rowData[74-1:89]
+		record["PREVIOUS CARD NUMBER"] = rowData[90-1:105]
+		record["2ND PREVIOUS CARD NUMBER"] = rowData[106-1:121]
+		record["AEROPLAN NUMBER"] = rowData[122-1:137]
+		record["PRIMARY CARD NAME"] = rowData[138-1:157]
+		record["SECOND CARD NAME"] = rowData[158-1:177]
+		record["THIRD CARD NAME"] = rowData[178-1:197]
+		record["FOURTH CARD NAME"] = rowData[198-1:217]
+		record["PAYMENT CODE FOR MONTHY TRANSACTIONS"] = rowData[218-1]
+		record["CREDIT LIMIT"] = rowData[219-1:229]
+		record["CREDIT LIMIT DATE"] = rowData[230-1:237]
+		record["CARD ADD DATE"] = rowData[238-1:245]
+		record["CARD STATUS LAST CHANGED DATE"] = rowData[246-1:253]
+		record["CARD ISSUE DATE"] = rowData[254-1:261]
+		record["NUMBER OF ISSUED CARDS 01-99"] = rowData[262-1:263]
+		record["CARD NOTES"] = rowData[264-1:318]
+		record["FILLER"] = rowData[319-1:363]
+		record["CARD AREA 2"] = rowData[364-1:658]
+		record["CARD AREA 3"] = rowData[659-1:953]
+		record["CARD AREA 4"] = rowData[954-1:1248]
+		record["CARD AREA 5"] = rowData[1249-1:1543]
+		record["CARD AREA 6"] = rowData[1544-1:1838]
+		record["CARD AREA 7"] = rowData[1839-1:2133]
+		record["CARD AREA 8"] = rowData[2134-1:2428]
+		record["CARD AREA 9"] = rowData[2429-1:2723]
+        record["CARD AREA 10"] = rowData[2724-1:3018]
+
+            
+    elif rowType == "35C":
+        # Row type: 35C - AAA RECORD, CHECK INFO SEGMENT
+        rowType = "AAA RECORD, CHECK INFO SEGMENT"
+		record["SEGMENT C"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[45739-1]
+		record["CANADIAN CHECKING ACCOUNT STATUS"] = rowData[52-1]
+		record["DATE OPENED"] = rowData[45898-1]
+		record["DATE CLOSED"] = rowData[61-1:68]
+		record["DATE REINSTATED"] = rowData[69-1:76]
+		record["DATE CHECKS WERE LAST ORDERED"] = rowData[77-1:84]
+		record["CANADIAN CHECKING ACCT NUMBER"] = rowData[85-1:91]
+		record["CAN. CHECKING ACCT NUMBER MANUAL OVERRIDE CODE"] = rowData[92-1]
+		record["PREVIOUS CAN. CHECKING ACCOUNT NUMBER"] = rowData[93-1:99]
+		record["PREV CAN. CHECKING ACCT NUMBER MANUAL OVERRIDE"] = rowData[100-1]
+		record["2ND PREVIOUS CAN. CHECKING ACCOUNT NUMBER"] = rowData[101-1:107]
+		record["M = MANUALLY UPDATED"] = rowData[108-1]
+		record["CANADIAN BUSINESS CHECK STARTING NUMBER"] = rowData[109-1:113]
+		record["CANADIAN PERSONAL CHECK STARTING NUMBER"] = rowData[114-1:118]
+		record["CANADIAN CHECK TYPE"] = rowData[119-1]
+		record["CANADIAN CHECK LANGUAGE CODE"] = rowData[120-1]
+		record["CANADIAN CHECK FUND CODE"] = rowData[121-1]
+		record["CANADIAN CHECK ACTION"] = rowData[122-1]
+		record["FILLER"] = rowData[123-1:158]
+		record["US CHECKING INFORMATION"] = rowData[159-1]
+		record["DATE US CHECKING ACCOUNT OPENED"] = rowData[160-1:167]
+		record["DATE US CHECKING ACCOUNT CLOSED"] = rowData[168-1:175]
+		record["DATE US CHECKING ACCOUNT REINSTATED"] = rowData[176-1:183]
+		record["DATE US CHECKS WERE LAST ORDERED"] = rowData[184-1:191]
+		record["US CHECKING ACCT NUMBER"] = rowData[192-1:199]
+		record["US CHECKING ACCT NUMBER MANUAL OVERRIDE CODE"] = rowData[200-1]
+		record["PREV US CHECKING ACCT NUMBER MANUAL OVERRIDE"] = rowData[201-1:208]
+		record["M = MANUALLY UPDATED"] = rowData[209-1]
+		record["2ND PREVIOUS US CHECKING ACCOUNT NUMBER"] = rowData[210-1:217]
+		record["2ND PREV US CHECKING ACCT NUMBER MANUAL"] = rowData[218-1]
+		record["US BUSINESS CHECK STARTING NUMBER"] = rowData[219-1:223]
+		record["US PERSONAL CHECK STARTING NUMBER"] = rowData[224-1:228]
+		record["US CHECK TYPE"] = rowData[229-1]
+		record["US CHECK LANGUAGE CODE"] = rowData[230-1]
+		record["US CHECK FUND CODE"] = rowData[231-1]
+		record["US CHECK ACTION"] = rowData[232-1]
+		record["FILLER"] = rowData[233-1:272]
+		record["CHECK FEE TYPE"] = rowData[273-1]
+		record["SHIP TO CODE"] = rowData[274-1]
+		record["CHECK ADDRESS LINE 1"] = rowData[275-1:309]
+		record["CHECK ADDRESS LINE 2"] = rowData[310-1:344]
+		record["CHECK ADDRESS LINE 3"] = rowData[345-1:379]
+		record["CHECK ADDRESS LINE 4"] = rowData[380-1:414]
+		record["CHECK ADDRESS LINE 5"] = rowData[415-1:449]
+		record["CHECK ADDRESS ZIP/POSTAL CODE"] = rowData[450-1:459]
+		record["SHIPPING ADDRESS LINE 1"] = rowData[460-1:494]
+		record["SHIPPING ADDRESS LINE 2"] = rowData[495-1:529]
+		record["SHIPPING ADDRESS LINE 3"] = rowData[530-1:564]
+		record["SHIPPING ADDRESS LINE 4"] = rowData[565-1:599]
+		record["SHIPPING ADDRESS LINE 5"] = rowData[600-1:634]
+		record["SHIPPING ADDRESS POSTAL CODE"] = rowData[635-1:644]
+        record["FILLER"] = rowData[645-1:672]
+
+            
+    elif rowType == "35D":
+        # Row type: 35D - UCI RECORD 
+        rowType = "UCI RECORD"
+		record["SEGMENT D"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[45739-1]
+		record["NAME"] = rowData[52-1]
+		record["FIRST NAME"] = rowData[45910-1]
+		record["MIDDLE INITIAL"] = rowData[73-1]
+		record["LAST NAME"] = rowData[74-1:93]
+		record["COMPANY NAME"] = rowData[15204-1]
+		record["NAME"] = rowData[94-1]
+		record["FIRST NAME"] = rowData[95-1:114]
+		record["MIDDLE INITIAL"] = rowData[115-1]
+		record["LAST NAME"] = rowData[116-1:135]
+		record["COMPANY NAME"] = rowData[94-1:129]
+		record["UCI-CO-OWNED"] = rowData[136-1:155]
+		record["UCI-CO-OWNED-PERCENT"] = rowData[156-1:161]
+		record["UCI-ENTITY-ID"] = rowData[162-1:240]
+		record["UCI1"] = rowData[241-1:260]
+		record["UCI1-PERCENT"] = rowData[261-1:266]
+		record["UCI2"] = rowData[267-1:286]
+		record["UCI2-PERCENT"] = rowData[287-1:292]
+		record["UCI3"] = rowData[293-1:312]
+		record["UCI3-PERCENT"] = rowData[313-1:318]
+		record["UCI4"] = rowData[319-1:338]
+		record["UCI4-PERCENT"] = rowData[339-1:344]
+        record["FUTURE USE"] = rowData[345-1:360]
+
+            
+    elif rowType == "40A":
+        # Row type: 40A - AMERICAN EXPRESS ACM RECORD
+        rowType = "AMERICAN EXPRESS ACM RECORD"
+		record["COMMON RECORD AREA - RECORD ID = 40"] = rowData[47-1:68]
+		record["SEGMENT A"] = rowData[69-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[70-1:73]
+		record["DATE ADDED"] = rowData[74-1:81]
+		record["DATE CHANGED"] = rowData[82-1:89]
+		record["AMERICAN EXPRESS ACCOUNT NUMBER"] = rowData[90-1:104]
+		record["PROVIDENT BANK CHECKING ACCOUNT NUMBER"] = rowData[105-1:114]
+		record["DATE ACCOUNT WAS OPENED"] = rowData[115-1:122]
+		record["DATE ACCOUNT WAS CHANGED"] = rowData[123-1:130]
+		record["NUMBER OF AMER. EXP. ACM RECORDS"] = rowData[131-1:133]
+		record["ACM CODE FROM P/P RECORD (RIGHT JUSTIFIED)"] = rowData[134-1:135]
+		record["SUSPEND CODE"] = rowData[136-1]
+		record["DATE PUT ON HOLD"] = rowData[137-1:144]
+		record["DATE RE-INSTATED"] = rowData[145-1:152]
+		record["N/A TITLE LINE"] = rowData[153-1:172]
+		record["N/A OPTIONAL TITLE LINE"] = rowData[173-1:192]
+		record["N/A STREET LINE"] = rowData[193-1:212]
+		record["N/A CITY, STATE LINE"] = rowData[213-1:232]
+		record["ZIP CODE"] = rowData[233-1:241]
+		record["CSFUND (FOR 99 FUNDS - BINARY)"] = rowData[242-1:243]
+		record["TRID (PRINT CONTROL)"] = rowData[244-1]
+		record["EMBOSS CODE"] = rowData[245-1]
+		record["CHANGE ALL ADDRESS CODE"] = rowData[246-1]
+		record["CANCEL CODE"] = rowData[247-1:248]
+        record["FOR FUTURE USE"] = rowData[249-1:268]
+
+            
+    elif rowType == "45A":
+        # Row type: 45A - CUSTOMER AND ACCOUNT(CAT) INFORMATION
+        rowType = "CUSTOMER AND ACCOUNT(CAT) INFORMATION"
+		record["COMMON RECORD AREA - RECORD ID = 45"] = rowData[47-1:68]
+		record["SEGMENTA"] = rowData[69-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[70-1:71]
+		record["CUSTOMER ACCOUNT LEVEL INDEX"] = rowData[72-1]
+		record["NUMBER OF CUSTOMERS ON THE RECORD"] = rowData[172-1:173]
+		record["BRACH NUMBER"] = rowData[174-1:176]
+		record["ACCOUNT NUMBER"] = rowData[177-1:181]
+		record["CAT PERSON ENTITY"] = rowData[158-1]
+		record["CAT FIRST NAME"] = rowData[159-178]
+		record["CAT MIDDLE NAME"] = rowData[179-198]
+		record["CAT LAST NAME"] = rowData[199-218]
+		record["CAT NAME SUFFIX"] = rowData[219-224]
+		record["CAT ENTITY NAME"] = rowData[159-208]
+		record["CAT YEAR OF BIRTH"] = rowData[225-228]
+		record["CAT CUSTOMER ID"] = rowData[229-237]
+		record["CAT ROLE"] = rowData[238-1]
+		record["CAT START DATE"] = rowData[239-246]
+		record["CAT END DATE"] = rowData[247-254]
+		record["CAT REASON CODE"] = rowData[255-1]
+		record["CAT EMPLOYER IDENTIFICATION NUMBER"] = rowData[256-264]
+		record["CAT DISCRETION"] = rowData[265-1]
+		record["CAT CUSTOMER TYPE"] = rowData[266-1]
+		record["CAT CUSTOMER TYPE"] = rowData[267-1]
+		record["CAT CUSTOMER TYPE"] = rowData[268-1]
+		record["CAT DOING BUSINESS AS"] = rowData[269-318]
+        record["CAT LEGAL ENTITY IDENTIFIER"] = rowData[319-338]
+
+            
+    elif rowType == "51A":
+        # Row type: 51A - PP EXTENSION RECORD, BASE SEGMENT A
+        rowType = "PP EXTENSION RECORD, BASE SEGMENT A"
+		record["COMMON RECORD AREA RECORD ID = 51"] = rowData[47-1:68]
+		record["SEGMENT A"] = rowData[69-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[70-1:73]
+		record["CUSTODY ACCOUNT"] = rowData[74-1:76]
+		record["SWIFT ID - 9A"] = rowData[77-1:85]
+		record["SWIFT ID - 9B"] = rowData[86-1:87]
+		record["TELEX FAX IND"] = rowData[88-1]
+		record["TELEX FAX ID"] = rowData[89-1:105]
+		record["TELEX FAX ADDRESS-1"] = rowData[106-1:135]
+		record["TELEX FAX ADDRESS-2"] = rowData[136-1:165]
+		record["EXECUTIVE OR PRIME BROKER"] = rowData[166-1]
+		record["INSTITUTIONAL ACCOUNT NUMBER"] = rowData[167-1:182]
+		record["ACH ENTITLEMENT FIELD"] = rowData[183-1]
+		record["CUSTODIAL FLIP"] = rowData[184-1]
+		record["CUSTODY FEE EXEMPT"] = rowData[185-1]
+		record["CUSTODY FEE STATUS"] = rowData[186-1]
+		record["STMT2-FLD01"] = rowData[187-1:188]
+		record["STMT2-FLD02"] = rowData[189-1:190]
+		record["STMT2-FLD03"] = rowData[191-1:192]
+		record["STMT2-FLD04"] = rowData[193-1:194]
+		record["STMT2-FLD05"] = rowData[195-1:196]
+		record["STMT2-FLD06"] = rowData[197-1:198]
+		record["STMT2-FLD07"] = rowData[199-1:200]
+		record["STMT2-FLD08"] = rowData[201-1:202]
+		record["STMT2-FLD09"] = rowData[203-1:204]
+		record["STMT2-FLD10"] = rowData[205-1:206]
+		record["STMT1-FLD01"] = rowData[207-1]
+		record["STMT1-FLD02"] = rowData[208-1]
+		record["STMT1-FLD03"] = rowData[209-1]
+		record["STMT1-FLD04"] = rowData[210-1]
+		record["STMT1-FLD05"] = rowData[211-1]
+		record["STMT1-FLD06"] = rowData[212-1]
+		record["STMT1-FLD07"] = rowData[213-1]
+		record["STMT1-FLD08"] = rowData[214-1]
+		record["STMT1-FLD09"] = rowData[215-1]
+		record["STMT1-FLD10"] = rowData[216-1]
+		record["STMT1-FLD11"] = rowData[217-1]
+		record["STMT1-FLD12"] = rowData[218-1]
+		record["STMT1-FLD13"] = rowData[219-1]
+		record["STMT1-FLD14"] = rowData[220-1]
+		record["STMT1-FLD15"] = rowData[221-1]
+		record["STMT1-FLD16"] = rowData[222-1]
+		record["STMT1-FLD17"] = rowData[223-1]
+		record["STMT1-FLD18"] = rowData[224-1]
+		record["STMT1-FLD19"] = rowData[225-1]
+		record["STMT1-FLD20"] = rowData[226-1]
+		record["DATE LAST ACTIVE"] = rowData[227-1:234]
+		record["STOCK COMMISSION RATE"] = rowData[235-1:242]
+		record["BOND COMMISSION RATE"] = rowData[243-1:250]
+		record["RIO"] = rowData[251-1]
+		record["INVESTMENT ADVISOR NUMBER"] = rowData[252-1:252]
+		record["INTERNATIONAL TAX ID NUMBER (ITIN)"] = rowData[256-1:264]
+		record["PROXY MAIL CODE"] = rowData[265-1]
+		record["MSRB CUSTOMER TRANSACTION REPORTING"] = rowData[266-1]
+		record["TAXLOT (MUTUALLY EXCLUSIVE WITH PSR)"] = rowData[267-1]
+		record["DDA - DEMAND DEPOSIT ACCOUNT ACH=4"] = rowData[268-1]
+		record["STOCK COMMISSION OVERRIDE CODE"] = rowData[269-1:270]
+		record["BOND COMMISSION OVERRIDE CODE"] = rowData[271-1:272]
+		record["BROKER CLEARING NUMBER"] = rowData[273-1:276]
+		record["CLOSED IRA CODE"] = rowData[277-1]
+		record["FUNDS IN ADVANCE"] = rowData[278-1]
+		record["AVERAGE PRICE COMPRESSION"] = rowData[279-1]
+		record["AMERICAN AIRLINES ADVANTAGE ACCT NO"] = rowData[280-1:285]
+		record["AMERICAN AIRLINES ADVANTAGE CHECK DIGIT"] = rowData[286-1]
+		record["REFERRAL-DATE"] = rowData[287-1:294]
+		record["RSP INSTITUTION-1"] = rowData[295-1:314]
+		record["RSP INSTITUTION-2"] = rowData[315-1:334]
+		record["PRIVATE FIELDS"] = rowData[335-1:344]
+		record["NUMBER OF ADDITIONAL SEGMENTS"] = rowData[345-1:346]
+		record["SEGMENT ID OF 1ST SEGMENT"] = rowData[347-1]
+		record["STARTING ADDRESS OF 1ST ADDITIONAL SEGMENT"] = rowData[348-1:351]
+		record[""SEGMENT CONTROL" AREA # 2"] = rowData[352-1:356]
+		record[""SEGMENT CONTROL" AREA # 3"] = rowData[357-1:361]
+        record[""SEGMENT CONTROL" AREA # 4"] = rowData[362-1:366]
+
+            
+    elif rowType == "51B":
+        # Row type: 51B - PP EXTENSION RECORD, SEGMENT B
+        rowType = "PP EXTENSION RECORD, SEGMENT B"
+		record["SEGMENT B"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT (INCLUDES POS. 1 - 5)"] = rowData[48-1:51]
+		record["INA TAG/IDENTIFIER"] = rowData[52-1:71]
+		record["INA SOURCE CODE"] = rowData[72-1:75]
+		record["INA PENDING FLAG"] = rowData[76-1]
+		record["INA REJECT FLAG"] = rowData[77-1]
+		record["ADDITIONAL SS/TAXID FOR PRIMARY HOLDER"] = rowData[78-1:86]
+		record["SS/TAXID CODE FOR ABOVE"] = rowData[87-1]
+		record["ADDITIONAL SS/TAXID FOR SECONDARY HOLDER"] = rowData[88-1:96]
+		record["SS/TAXID CODE FOR ABOVE"] = rowData[97-1]
+		record["INA ACCOUNT"] = rowData[98-1]
+		record["FEE-CURRENCY 1"] = rowData[99-1:100]
+		record["FEE-FREQUENCY 1"] = rowData[101-1]
+		record["FEE START DATE 1"] = rowData[102-1:109]
+		record["NEXT FEE DATE 1"] = rowData[110-1:117]
+		record["LAST FEE DATE 1"] = rowData[118-1:125]
+		record["FEE-SCHEDULE-1"] = rowData[126-1:129]
+		record["FEE-SCHEDULE-2"] = rowData[130-1:133]
+		record["FEE DISC RATE 1"] = rowData[134-1:138]
+		record["STATEMENT FREQUENCY"] = rowData[139-1]
+		record["STATEMENT FISCAL DATE"] = rowData[140-1:143]
+		record["FEE-CURRENCY 2"] = rowData[144-1:145]
+		record["FEE-FREQUENCY 2"] = rowData[146-1]
+		record["FEE START DATE 2"] = rowData[10154-1]
+		record["NEXT FEE DATE 2"] = rowData[155-1:162]
+		record["LAST FEE DATE 2"] = rowData[163-1:170]
+		record["FEE DISC RATE 2"] = rowData[171-1:175]
+		record["CANADIAN PROD-TYP"] = rowData[176-1:177]
+		record["SERV-TYP"] = rowData[178-1:179]
+		record["FEE-COMM"] = rowData[180-1:181]
+		record["PRO-STAT"] = rowData[182-1:183]
+		record["ACCT-STAT"] = rowData[184-1:185]
+		record["PLEDGE"] = rowData[186-1:187]
+		record["CR-PROOF"] = rowData[188-1:189]
+		record["PRIC-DISC"] = rowData[190-1:191]
+		record["FEE-REL"] = rowData[192-1:193]
+		record["REFERRAL"] = rowData[194-1:195]
+		record["DIVISION"] = rowData[196-1:197]
+		record["FUTURE USE"] = rowData[198-1:215]
+		record["ALTERNATE BRANCH"] = rowData[216-1:220]
+		record["ALTERNATE RR"] = rowData[221-1:226]
+		record["EMPLOYER"] = rowData[227-1]
+		record["DATE ALTERNATE BRANCH LAST CHANGED"] = rowData[228-1:235]
+		record["ALERT ALPH KEY"] = rowData[236-1]
+        record["FILLER"] = rowData[237-1:240]
+
+            
+    elif rowType == "51C":
+        # Row type: 51C - PP EXTENSION RECORD, BANKING INFO SEGMENT
+        rowType = "PP EXTENSION RECORD, BANKING INFO SEGMENT"
+		record["SEGMENT C"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[45739-1]
+		record["DATE RECORD ADDED"] = rowData[45867-1]
+		record["DATE RECORD CHANGED"] = rowData[60-1:67]
+		record["SIGNON ID OF LAST UPDATE"] = rowData[68-1:71]
+		record["TERMINAL ID OF LAST UPDATE"] = rowData[72-1:75]
+		record["FILLER"] = rowData[76-1:77]
+		record["WAIVE FEE"] = rowData[78-1]
+		record["REDUCED B1 FEE"] = rowData[79-1]
+		record["BANK N&A LINE #1"] = rowData[80-1:114]
+		record["BANK N&A LINE #2"] = rowData[115-1:149]
+		record["BANK N&A LINE #3"] = rowData[150-1:184]
+		record["BANK N&A LINE #4"] = rowData[185-1:219]
+		record["BANK N&A LINE #5"] = rowData[220-1:254]
+		record["ACM VENDOR NUMBER"] = rowData[255-1:257]
+		record["CANCELED ACM VENDOR NUMBER"] = rowData[258-1:260]
+		record["FILLER"] = rowData[261-1:314]
+		record["CHECKING ACCOUNT STATUS"] = rowData[315-1]
+		record["CHECKING ACCOUNT NUMBER"] = rowData[316-1:331]
+		record["PREVIOUS CHECKING ACCOUNT NUMBER"] = rowData[332-1:347]
+		record["FILLER"] = rowData[348-1]
+		record["CHECKING PRIMARY NAME"] = rowData[349-1:378]
+		record["CHECKING SECONDARY NAME"] = rowData[379-1:408]
+		record["OWNERSHIP CODE"] = rowData[409-1]
+		record["REASON CHECKING ACCOUNT WAS CLOSED"] = rowData[410-1]
+		record["FOREIGN ACCOUNT"] = rowData[411-1]
+		record["CHECKING CREDIT LINE"] = rowData[412-1:428]
+		record["DATE CHECKING ACCOUNT OPENED"] = rowData[429-1:436]
+		record["DATE CHECKING ACCOUNT CLOSED"] = rowData[437-1:444]
+		record["DATE CHECKING ACCOUNT APPROVED"] = rowData[445-1:452]
+		record["DATE CHECKING ACCOUNT REINSTATED"] = rowData[453-1:460]
+		record["DATE CHECKING ACCOUNT SUSPENDED"] = rowData[461-1:468]
+		record["FILLER"] = rowData[469-1]
+		record["ABA NUMBER"] = rowData[470-1:479]
+		record["STARTING CHECK NUMBER"] = rowData[480-1:485]
+		record["LAST CHECK NUMBER ORDERED"] = rowData[486-1:491]
+		record["LAST CHECK ORDER DATE"] = rowData[492-1:499]
+		record["CHECK STYLE CODE"] = rowData[500-1]
+		record["MULTI-SIGNERS CODE"] = rowData[501-1]
+		record["CHECK COVER CODE"] = rowData[502-1]
+		record["CLIENT ADDRESS ON CHECKS CODE"] = rowData[503-1]
+		record["2ND PREVIOUS CHECKING ACCOUNT NUMBER"] = rowData[504-1:519]
+		record["SIGNATURE VALIDATION"] = rowData[520-1]
+		record["IMAGING DATE"] = rowData[521-1:528]
+		record["FILLER"] = rowData[529-1:553]
+		record["BANK CARD TYPE"] = rowData[554-1]
+		record["BANK CARD DEBIT/CREDIT CODE"] = rowData[555-1]
+		record["BANK CARD STATUS"] = rowData[556-1]
+		record["BANK CARD ACCOUNT NUMBER"] = rowData[557-1:572]
+		record["PREVIOUS BANK CARD ACCOUNT NUMBER"] = rowData[573-1:588]
+		record["SECOND PREVIOUS BANK CARD ACCOUNT NUMBER"] = rowData[589-1:604]
+		record["BANK CARD PRIMARY NAME"] = rowData[605-1:634]
+		record["BANK CARD SECONDARY NAME"] = rowData[635-1:664]
+		record["REASON BANK CARD ACCOUNT WAS CLOSED"] = rowData[665-1]
+		record["BANK CARD CREDIT LIMIT"] = rowData[666-1:682]
+		record["NUMBER OF CARDS ISSUED 00-99"] = rowData[683-1:684]
+		record["DATE BANK CARD OPENED"] = rowData[685-1:692]
+		record["DATE BANK CARD CLOSED"] = rowData[693-1:700]
+		record["DATE BANK CARD APPROVED"] = rowData[701-1:708]
+		record["DATE BANK CARD REINSTATED"] = rowData[709-1:716]
+		record["DATE BANK CARD SUSPENDED"] = rowData[717-1:724]
+		record["DATE BANK CARD EXPIRED"] = rowData[725-1:732]
+		record["SECONDARY PLASTIC QUANTITY 00-99"] = rowData[733-1:734]
+		record["POSTING CODE"] = rowData[735-1]
+        record["FILLER"] = rowData[736-1:1168]
+
+            
+    elif rowType == "51D":
+        # Row type: 51D - PP EXTENSION RECORD, SEGMENT D
+        rowType = "PP EXTENSION RECORD, SEGMENT D"
+		record["SEGMENT D"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[49-1]
+		record["CANADIAN INBND EFT(D)"] = rowData[52-1]
+		record["CANADIAN INBND EFT ACCT TYPE (D)"] = rowData[53-1]
+		record["CANADIAN INBND EFT AMOUNT (D)"] = rowData[54-1:60]
+		record["CANADIAN INBND EFT DAYS (D) 00-31"] = rowData[61-1:62]
+		record["CANADIAN INBND EFT FREQUENCY (D)"] = rowData[63-1:64]
+		record["CANADIAN INBND BANK NUMBER 2 (D)"] = rowData[65-1:68]
+		record["CANADIAN INBND TRANSIT NUMBER 2 (D)"] = rowData[69-1:73]
+		record["CANADIAN INBND BANK ACCOUNT NUMBER 2 (D)"] = rowData[74-1:85]
+		record["EMAIL TYPE CODE"] = rowData[86-1]
+		record["EMAIL ADDRESS"] = rowData[87-1:126]
+		record["SECOND EMAIL TYPE CODE"] = rowData[127-1]
+		record["SECOND EMAIL ADDRESS"] = rowData[128-1:167]
+		record["HOUSEHOLDING EXEMPT"] = rowData[168-1]
+		record["CLIENT HOUSEHOLD CODE"] = rowData[169-1]
+		record["DATE CLIENT HOUSEHOLD CODE LAST UPDATED"] = rowData[170-1:177]
+		record["AMERICAN AIRLINES ADVANTAGE ACCT NAME"] = rowData[178-1:197]
+		record["P/P ELECTRONIC CONFIRM IND"] = rowData[198-1]
+		record["P/P ELECTRONIC STATEMENT IND"] = rowData[199-1]
+		record["CREDIT CHECK STATUS"] = rowData[200-1]
+		record["CREDIT CHECK REVIEW DATE"] = rowData[201-1:208]
+		record["USA TAX WITHHOLDING SUB CODE"] = rowData[209-1]
+		record["W8 TYPE S - PRIMARY HOLDER"] = rowData[210-1]
+		record["W8 TYPE S CERTIFICATION DATE"] = rowData[211-1:218]
+		record["W8 TYPE S LAST CHANGE DATE"] = rowData[219-1:226]
+		record["W8 TYPE L - JOINT HOLDER"] = rowData[227-1]
+		record["JOINT HOLDER USA TAX WITHHOLD(TEFRA)"] = rowData[228-1]
+		record["ELECTRONIC PROSPECTUS"] = rowData[229-1]
+		record["EQUITY COMMISSION OVERRIDE"] = rowData[230-1]
+		record["TAX LOT ACCOUNT METHOD"] = rowData[231-1]
+		record["TAX LOT FISCAL YEAR END MONTH 01-12"] = rowData[233-1:234]
+		record["TAX LOT EXEMPT STATUS"] = rowData[235-1]
+		record["TAX LOT CONVERSION OPTION"] = rowData[236-1]
+		record["TAX LOT STATEMENT OPTION"] = rowData[237-1]
+		record["TAX LOT REINVESTMENT OPTION"] = rowData[238-1]
+		record["DAY TRADING"] = rowData[239-1]
+		record["SUMMARY CONFIRM"] = rowData[240-1]
+		record["TAX ID NUMBER WITH EXPANDED VALUES"] = rowData[241-1:249]
+		record["EXPANDED TAX ID NUMBER CODES"] = rowData[250-1]
+		record["JOINT HOLDERS DATE OF BIRTH"] = rowData[251-1:258]
+		record["MARKET TIMER"] = rowData[259-1]
+		record["ELECTRONIC PROXY"] = rowData[260-1]
+		record["ELECTRONIC 1099"] = rowData[261-1]
+		record["COST CONSENT"] = rowData[262-1]
+		record["ALTERNATIVE 1099"] = rowData[263-1]
+		record["ANNUAL B228TD STATEMENT"] = rowData[264-1]
+		record["B NOTICE OVERRIDE"] = rowData[265-1]
+        record["TAXLOT OUTSIDE HOLDINGS ON STATEMENT"] = rowData[266-1]
+
+            
+    elif rowType == "51E":
+        # Row type: 51E - PP EXTENSION RECORD, SEGMENT E
+        rowType = "PP EXTENSION RECORD, SEGMENT E"
+		record["SEGMENT E"] = rowData[47-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[48-1:51]
+		record["RSP FEE PAY METHOD"] = rowData[52-1:54]
+		record["RSP FEE BANK NUMBER"] = rowData[55-1:58]
+		record["RSP FEE TRANSIT NUMBER"] = rowData[59-1:63]
+		record["RSP FEE ACCOUNT NUMBER"] = rowData[64-1:78]
+		record["FILLER"] = rowData[79-1:96]
+		record["WRAP CODE"] = rowData[97-1]
+		record["OPTION ORIGIN CODE"] = rowData[98-1]
+		record["SINGLE STOCK FUTURES (SSF)"] = rowData[99-1]
+		record["SINGLE STOCK FUTURES CHANGE DATE"] = rowData[100-1:107]
+		record["SSF PURCHASES"] = rowData[108-1]
+		record["SSF COVERED WRITING"] = rowData[109-1]
+		record["SSF NAKED WRITING"] = rowData[110-1]
+		record["OPTIONAL DIVIDEND INSTRUCTION CODE"] = rowData[111-1]
+		record["PREVIOUS SPECIAL STOCK COMMISSION CODE"] = rowData[112-1]
+		record["PREVIOUS MONEY MANAGER"] = rowData[113-1:115]
+		record["OCA# (OUTSIDE CUSTODY ACCOUNT)"] = rowData[116-1:125]
+		record["MISSING FORM FREEZE NOTIFICATION DATE"] = rowData[126-1:133]
+		record["ACCOUNT CLASS CODE FOR STOCK RECORDS"] = rowData[134-1:136]
+		record["PREVIOUS ALTERNATE RR"] = rowData[137-1:142]
+		record["NALINES LAST CHANGED DATE"] = rowData[143-1:150]
+		record["REPORT UNCOVER BASIS"] = rowData[151-1]
+		record["RESTRICTION CODE"] = rowData[152-1]
+		record["STATE WITHHOLDING EXEMPTION"] = rowData[153-1]
+		record["INA WEB USERID"] = rowData[154-1:161]
+		record["FRACTIONAL SHARES LIQUIDATION"] = rowData[162-1]
+		record["LARGE TRADER ID1"] = rowData[163-1:175]
+		record["LARGE TRADER ID2"] = rowData[176-1:188]
+		record["LARGE TRADER ID3"] = rowData[189-1:201]
+		record["MULTIPLE LARGE TRADER IDS"] = rowData[202-1]
+		record["TIME HORIZON"] = rowData[203-1:204]
+		record["TIME HORIZON CHANGED DATE"] = rowData[205-1:212]
+		record["LIQUIDITY"] = rowData[213-1:214]
+		record["LIQUIDITY CHANGE DATE"] = rowData[215-1:222]
+		record["RISK TOLERANCE"] = rowData[223-1:224]
+		record["RISK TOLERENCE CHANGE DATE"] = rowData[225-1:232]
+		record["FEDERAL ACCOUNT CODE"] = rowData[233-1]
+		record["FILLER"] = rowData[242-1:249]
+		record["FDID-END-DATE"] = rowData[250-1:257]
+		record["FDID-REASON-CODE"] = rowData[258-1]
+		record["ACCOUNT OFAC STATUS"] = rowData[259-1]
+		record["LAST VERIFICATION DATE"] = rowData[260-1:267]
+		record["NEXT VERIFICATION DATE"] = rowData[268-1:275]
+		record["SOURCE OF FUNDS AMOUNT"] = rowData[276-1:288]
+		record["SOURCE OF FUNDS DESCRIPTION"] = rowData[289-1:308]
+		record["ACCOUNT CATEGORY CODE"] = rowData[309-1:310]
+		record["INITIAL ORDER DESCRIPTION"] = rowData[311-1:330]
+		record["INDIVIDUAL WITH INTEREST IN THE ACCOUNT"] = rowData[331-1:360]
+		record["SUPPRESS NEXT VERIFICATION DATE"] = rowData[361-1]
+		record["MARK TO MARKET"] = rowData[362-1:365]
+		record["MARK TO MARKET CHANGE DATE"] = rowData[366-1:373]
+		record["FILLER"] = rowData[374-1:467]
+		record["CANADIAN WITHHOLD EXEMPT"] = rowData[468-1]
+		record["CANADIAN WITHHOLD"] = rowData[469-1:472]
+		record["CANADIAN WITHHOLD CHANGE DATE"] = rowData[473-1:480]
+		record["CAN BANK OUTBND FREQUENCY (A)"] = rowData[481-1:482]
+		record["CAN BANK OUTBND DO NOT USE START DATE (A)"] = rowData[483-1:490]
+		record["CAN BANK OUTBND DO NOT USE END DATE (A)"] = rowData[491-1:498]
+		record["CANADIAN BANK OUTBND FIXED AMOUNT (B)"] = rowData[499-1:505]
+		record["CANADIAN BANK OUTBND FIXED DAY (B) 01-31"] = rowData[506-1:507]
+		record["CANADIAN BANK OUTBND PAY METHOD (B)"] = rowData[508-1:510]
+		record["CANADIAN BANK OUTBND FREQUENCY (B)"] = rowData[511-1:512]
+		record["CANADIAN BANK OUTBND BANK NUMBER(B)"] = rowData[513-1:516]
+		record["CANADIAN BANK OUTBND TRANSIT (B)"] = rowData[517-1:521]
+		record["CANADIAN BANK OUTBND BANK ACCOUNT (B)"] = rowData[522-1:533]
+		record["CANADIAN BANK OUTBND DO NOT USE START DATE (B)"] = rowData[534-1:541]
+		record["CANADIAN BANK OUTBND DO NOT USE END DATE (B)"] = rowData[542-1:549]
+		record["CANADIAN BANK OUTBND FIXED AMOUNT (C)"] = rowData[550-1:556]
+		record["CANADIAN BANK OUTBND FIXED DAY (C) 01-31"] = rowData[557-1:558]
+		record["CANADIAN BANK OUTBND PAY METHOD (C)"] = rowData[559-1:561]
+		record["CANADIAN BANK OUTBND FREQUENCY (C)"] = rowData[562-1:563]
+		record["CANADIAN BANK OUTBND BANK NUMBER(C)"] = rowData[564-1:567]
+		record["CANADIAN BANK OUTBND TRANSIT (C)"] = rowData[568-1:572]
+		record["CANADIAN BANK OUTBND BANK ACCOUNT (C)"] = rowData[573-1:584]
+		record["CANADIAN BANK OUTBND DO NOT USE START DATE (C)"] = rowData[585-1:592]
+		record["CANADIAN BANK OUTBND DO NOT USE END DATE (C)"] = rowData[593-1:600]
+		record["CANADIAN BANK INBND DO NOT USE START DATE (D)"] = rowData[601-1:608]
+		record["CANADIAN BANK INBND DO NOT USE END DATE (D)"] = rowData[609-1:616]
+		record["CANADIAN BANK INBND(E)"] = rowData[617-1]
+		record["CANADIAN BANK INBND A/C (E)"] = rowData[618-1]
+		record["CANADIAN BANK INBND FIXED AMOUNT (E)"] = rowData[619-1:625]
+		record["CANADIAN BANK INBND FIXED DAY (E) 01-31"] = rowData[626-1:627]
+		record["CANADIAN BANK INBND FREQUENCY (E)"] = rowData[628-1:629]
+		record["CANADIAN BANK INBND BK2 (E)"] = rowData[630-1:633]
+		record["CANADIAN BANK INBND TRANSIT2 (E)"] = rowData[634-1:638]
+		record["CANADIAN BANK INBND BANK ACCT2 (E)"] = rowData[639-1:650]
+		record["CANADIAN BANK INBND DO NOT USE START DATE (E)"] = rowData[651-1:658]
+		record["CANADIAN BANK INBND DO NOT USE END DATE (E)"] = rowData[659-1:666]
+		record["CANADIAN BANK INBND(F)"] = rowData[667-1]
+		record["CANADIAN BANK INBND A/C (F)"] = rowData[668-1]
+		record["CANADIAN BANK INBND FIXED AMOUNT (F)"] = rowData[669-1:675]
+		record["CANADIAN BANK INBND FIXED DAY (F) 01-31"] = rowData[676-1:677]
+		record["CANADIAN BANK INBND FREQUENCY (F)"] = rowData[678-1:679]
+		record["CANADIAN BANK INBND BK2 (F)"] = rowData[680-1:683]
+		record["CANADIAN BANK INBND TRANSIT2 (F)"] = rowData[684-1:688]
+		record["CANADIAN BANK INBND BANK ACCT2 (F)"] = rowData[689-1:700]
+		record["CANADIAN BANK INBND DO NOT USE START DATE (F)"] = rowData[701-1:708]
+		record["CANADIAN BANK INBND DO NOT USE END DATE (F)"] = rowData[709-1:716]
+		record["U.S. BANK OUTBND FIXED AMOUNT (G)"] = rowData[717-1:723]
+		record["U.S. BANK OUTBND FIXED DAY (G) 01-31"] = rowData[724-1:725]
+		record["U.S. BANK OUTBND PAY METHOD (G)"] = rowData[726-1:728]
+		record["U.S. BANK OUTBND FREQUENCY (G)"] = rowData[729-1:730]
+		record["U.S. BANK OUTBND DO NOT USE START DATE"] = rowData[731-1:738]
+		record["U.S. BANK OUTBND DO NOT USE END DATE"] = rowData[739-1:746]
+		record["U.S. BANK OUTBND FIXED AMOUNT (H)"] = rowData[747-1:753]
+		record["U.S. BANK OUTBND FIXED DAY (H) 01-31"] = rowData[754-1:755]
+		record["U.S. BANK OUTBND PAY METHOD (H)"] = rowData[756-1:758]
+		record["U.S. BANK OUTBND FREQUENCY (H)"] = rowData[759-1:760]
+		record["U.S. BANK OUTBND BANK NUMBER(H)"] = rowData[761-1:764]
+		record["U.S. BANK OUTBND TRANSIT (H)"] = rowData[765-1:769]
+		record["U.S. BANK OUTBND BANK ACCOUNT (H)"] = rowData[770-1:781]
+		record["U.S. BANK OUTBND DO NOT USE START DATE (H)"] = rowData[782-1:789]
+		record["U.S. BANK OUTBND DO NOT USE END DATE (H)"] = rowData[790-1:797]
+		record["U.S. BANK OUTBND FIXED AMOUNT (J)"] = rowData[798-1:804]
+		record["U.S. BANK OUTBND FIXED DAY (J) 01-31"] = rowData[805-1:806]
+		record["U.S. BANK OUTBND PAY METHOD (J)"] = rowData[807-1:809]
+		record["U.S. BANK OUTBND FREQUENCY (J)"] = rowData[810-1:811]
+		record["U.S. BANK OUTBND BANK NUMBER(J)"] = rowData[812-1:815]
+		record["U.S. BANK OUTBND TRANSIT (J)"] = rowData[816-1:820]
+		record["U.S. BANK OUTBND BANK ACCOUNT (J)"] = rowData[821-1:832]
+		record["U.S. BANK OUTBND DO NOT USE START DATE (J)"] = rowData[833-1:840]
+		record["U.S. BANK OUTBND DO NOT USE END DATE (J)"] = rowData[841-1:848]
+		record["U.S. BANK INBND(K)"] = rowData[849-1]
+		record["U.S. BANK INBND A/C (K)"] = rowData[850-1]
+		record["U.S. BANK INBND FIXED AMOUNT (K)"] = rowData[851-1:857]
+		record["U.S. BANK INBND FIXED DAY (K)"] = rowData[858-1:859]
+		record["U.S. BANK INBND FREQUENCY (K)"] = rowData[860-1:861]
+		record["U.S. BANK INBND BK2 (K)"] = rowData[862-1:865]
+		record["U.S. BANK INBND TRANSIT2 (K)"] = rowData[866-1:870]
+		record["U.S. BANK INBND BANK ACCT2 (K)"] = rowData[871-1:882]
+		record["U.S. BANK INBND DO NOT USE START DATE (K)"] = rowData[883-1:890]
+		record["U.S. BANK INBND DO NOT USE END DATE (K)"] = rowData[891-1:898]
+		record["U.S. BANK INBND (L)"] = rowData[899-1]
+		record["U.S. BANK INBND A/C (L)"] = rowData[900-1]
+		record["U.S. BANK INBND FIXED AMOUNT (L)"] = rowData[901-1:907]
+		record["U.S. BANK INBND FIXED DAY (L) 01-31"] = rowData[908-1:909]
+		record["U.S. BANK INBND FREQUENCY (L)"] = rowData[910-1:911]
+		record["U.S. BANK INBND BK2 (L)"] = rowData[912-1:915]
+		record["U.S. BANK INBND TRANSIT2 (L)"] = rowData[916-1:920]
+		record["U.S. BANK INBND BANK ACCT2 (L)"] = rowData[921-1:932]
+		record["U.S. BANK INBND DO NOT USE START DATE (L)"] = rowData[933-1:940]
+		record["U.S. BANK INBND DO NOT USE END DATE (L)"] = rowData[941-1:948]
+		record["U.S. BANK INBND (M)"] = rowData[949-1]
+		record["U.S. BANK INBND A/C (M)"] = rowData[950-1]
+		record["U.S. BANK INBND FIXED AMOUNT (M)"] = rowData[951-1:957]
+		record["U.S. BANK INBND FIXED DAY (M) 01-31"] = rowData[958-1:959]
+		record["U.S. BANK INBND FREQUENCY (M)"] = rowData[960-1:961]
+		record["U.S. BANK INBND BK2 (M)"] = rowData[962-1:965]
+		record["U.S. BANK INBND TRANSIT2 (M)"] = rowData[966-1:970]
+		record["U.S. BANK INBND BANK ACCT2 (M)"] = rowData[971-1:982]
+		record["U.S. BANK INBND DO NOT USE START DATE (M)"] = rowData[983-1:990]
+		record["U.S. BANK INBND DO NOT USE END DATE (M)"] = rowData[991-1:998]
+		record["FEE IM RATE-1"] = rowData[999-1:1003]
+		record["FEE FINAL TIER-1"] = rowData[1004-1]
+		record["FEE CASH CALC-1"] = rowData[1005-1]
+		record["FEE CO TRUSTEE-1"] = rowData[1006-1]
+		record["FEE INVESTMENT MGR-1"] = rowData[1007-1:1009]
+		record["FEE IM OFFSET-1"] = rowData[1010-1:1019]
+		record["FEE IM RATE-2"] = rowData[1020-1:1024]
+		record["FEE FINAL TIER-2"] = rowData[1025-1]
+		record["FEE CASH CALC-2"] = rowData[1026-1]
+		record["FEE CO TRUSTEE-2"] = rowData[1027-1]
+		record["FEE INVESTMENT MGR-2"] = rowData[1028-1:1030]
+		record["FEE IM OFFSET-2"] = rowData[1031-1:1040]
+		record["FEE SCHEDULE-3"] = rowData[1041-1:1044]
+		record["FEE FREQUENCY-3"] = rowData[1045-1]
+		record["FEE CURRENCY-3 S2 TABLE"] = rowData[1046-1:1047]
+		record["FEE START DATE-3"] = rowData[1048-1:1056]
+		record["NEXT FEE DATE-3"] = rowData[1057-1:1065]
+		record["LAST FEE DATE-3"] = rowData[1066-1:1074]
+		record["FEE DISC RATE-3"] = rowData[1075-1:1079]
+		record["FEE IM RATE-3"] = rowData[1080-1:1084]
+		record["FEE FINAL TIER-3"] = rowData[1085-1]
+		record["FEE CASH CALC-3"] = rowData[1086-1]
+		record["FEE CO TRUSTEE-3"] = rowData[1087-1]
+		record["FEE INVESTMENT MGR-3"] = rowData[1088-1:1090]
+		record["FEE IM OFFSET-3"] = rowData[1091-1:1100]
+		record["FEE SCHEDULE-4"] = rowData[1101-1:1104]
+		record["FEE FREQUENCY-4"] = rowData[1105-1]
+		record["FEE CURRENCY-4"] = rowData[1106-1:1107]
+		record["FEE START DATE-4"] = rowData[1108-1:1116]
+		record["NEXT FEE DATE-4"] = rowData[1117-1:1125]
+		record["LAST FEE DATE-4"] = rowData[1126-1:1134]
+		record["FEE DISC RATE-4"] = rowData[1135-1:1139]
+		record["FEE IM RATE-4"] = rowData[1140-1:1144]
+		record["FEE FINAL TIER-4"] = rowData[1145-1]
+		record["FEE CASH CALC-4"] = rowData[1146-1]
+		record["FEE CO TRUSTEE-4"] = rowData[1147-1]
+		record["FEE INVESTMENT MGR-4"] = rowData[1148-1:1150]
+		record["FEE IM OFFSET-4"] = rowData[1151-1:1160]
+		record["FEE SCHEDULE-5"] = rowData[1161-1:1164]
+		record["FEE FREQUENCY-5"] = rowData[1165-1]
+		record["FEE CURRENCY-5"] = rowData[1166-1:1167]
+		record["FEE START DATE-5"] = rowData[1168-1:1176]
+		record["NEXT FEE DATE-5"] = rowData[1177-1:1185]
+		record["LAST FEE DATE-5"] = rowData[1186-1:1194]
+		record["FEE DISC RATE-5"] = rowData[1195-1:1199]
+		record["FEE IM RATE-5"] = rowData[1200-1:1204]
+		record["FEE FINAL TIER-5"] = rowData[1205-1]
+		record["FEE CASH CALC-5"] = rowData[1206-1]
+		record["FEE CO TRUSTEE-5"] = rowData[1207-1]
+		record["FEE INVESTMENT MGR-5"] = rowData[1208-1:1210]
+		record["FEE IM OFFSET-5"] = rowData[1211-1:1220]
+		record["FEE SCHEDULE-6"] = rowData[1221-1:1224]
+		record["FEE FREQUENCY-6"] = rowData[1225-1]
+		record["FEE CURRENCY-6"] = rowData[1226-1:1227]
+		record["FEE START DATE-6"] = rowData[1228-1:1236]
+		record["NEXT FEE DATE-6"] = rowData[1237-1:1245]
+		record["LAST FEE DATE-6"] = rowData[1246-1:1254]
+		record["FEE DISC RATE-6"] = rowData[1255-1:1259]
+		record["FEE IM RATE-6"] = rowData[1260-1:1264]
+		record["FEE FINAL TIER-6"] = rowData[1265-1]
+		record["FEE CASH CALC-6"] = rowData[1266-1]
+		record["FEE CO TRUSTEE-6"] = rowData[1267-1]
+		record["FEE INVESTMENT MGR-6"] = rowData[1268-1:1270]
+		record["FEE IM OFFSET-6"] = rowData[1271-1:1280]
+		record["TAX LOT ACTIVATION DATE"] = rowData[1281-1:1288]
+		record["EFT DEPOSIT(A)"] = rowData[1289-1]
+		record["EFT DEPOSIT(B)"] = rowData[1290-1]
+		record["EFT DEPOSIT©"] = rowData[1291-1]
+		record["EFT DEPOSIT(D)"] = rowData[1292-1]
+		record["EFT DEPOSIT(E)"] = rowData[1293-1]
+		record["EFT DEPOSIT(F)"] = rowData[1294-1]
+		record["EFT DEPOSIT(G)"] = rowData[1295-1]
+		record["EFT DEPOSIT(H)"] = rowData[1296-1]
+		record["EFT DEPOSIT(J)"] = rowData[1297-1]
+		record["EFT DEPOSIT(K)"] = rowData[1298-1]
+		record["EFT DEPOSIT(L)"] = rowData[1299-1]
+		record["EFT DEPOSIT(M)"] = rowData[1300-1]
+		record["THIRTEEN MONTH TAX LOT RUN"] = rowData[1301-1]
+		record["RSP PLAN SUBSCRIBER CHANGE DATE (PRIMARY)"] = rowData[1302-1:1309]
+		record["RSP PLAN SUBSCRIBER CHANGE DATE (JOINT)"] = rowData[1310-1:1317]
+		record["CASH BACK PUT"] = rowData[1318-1]
+		record["MARRIED PUT"] = rowData[1319-1]
+		record["INDEXED WARRANT PUT"] = rowData[1320-1]
+		record["FOREIGN CURRENCY OPTION PURCHASE"] = rowData[1321-1]
+		record["PREVIOUS ALTERNATE BRANCH"] = rowData[1322-1:1326]
+		record["FEE-SCHEDULE-7"] = rowData[1327-1:1330]
+		record["FEE-FRQ-7"] = rowData[1331-1]
+		record["FEE-CURRENCY-7"] = rowData[1332-1:1333]
+		record["FEE-START-DATE-7"] = rowData[1334-1:1341]
+		record["NEXT-FEE-DATE-7"] = rowData[1342-1:1349]
+		record["LAST-FEE-DATE-7"] = rowData[1350-1:1357]
+		record["FEE-DISC-RATE-7"] = rowData[1358-1:1362]
+		record["FEE-IM-RATE-7"] = rowData[1363-1:1367]
+		record["FEE-FNL-TIER-7"] = rowData[1368-1]
+		record["FEE-CASH-CALC-7"] = rowData[1369-1]
+		record["FEE-CO-TSTEE-7"] = rowData[1370-1]
+		record["FEE-INV-MGR-7"] = rowData[1371-1:1373]
+		record["FEE-IM-OFFSET-7"] = rowData[1374-1:1383]
+		record["FEE-SCHEDULE-8"] = rowData[1384-1:1387]
+		record["FEE-FRQ-8"] = rowData[1388-1]
+		record["FEE-CURRENCY-8"] = rowData[1389-1:1390]
+		record["FEE-START-DATE-8"] = rowData[1391-1:1398]
+		record["NEXT-FEE-DATE-8"] = rowData[1399-1:1406]
+		record["LAST-FEE-DATE-8"] = rowData[1407-1:1414]
+		record["FEE-DISC-RATE-8"] = rowData[1415-1:1419]
+		record["FEE-IM-RATE-8"] = rowData[1420-1:1424]
+		record["FEE-FNL-TIER-8"] = rowData[1425-1]
+		record["FEE-CASH-CALC-8"] = rowData[1426-1]
+		record["FEE-CO-TSTEE-8"] = rowData[1427-1]
+		record["FEE-INV-MGR-8"] = rowData[1428-1:1430]
+		record["FEE-IM-OFFSET-8"] = rowData[1431-1:1440]
+		record["FEE-SCHEDULE-9"] = rowData[1441-1:1444]
+		record["FEE-FRQ-9"] = rowData[1445-1]
+		record["FEE-CURRENCY-9"] = rowData[1446-1:1447]
+		record["FEE-START-DATE-9"] = rowData[1448-1:1455]
+		record["NEXT-FEE-DATE-9"] = rowData[1456-1:1463]
+		record["LAST-FEE-DATE-9"] = rowData[1464-1:1471]
+		record["FEE-DISC-RATE-9"] = rowData[1472-1:1476]
+		record["FEE-IM-RATE-9"] = rowData[1477-1:1481]
+		record["FEE-FNL-TIER-9"] = rowData[1482-1]
+		record["FEE-CASH-CALC-9"] = rowData[1483-1]
+		record["FEE-CO-TSTEE-9"] = rowData[1438-1]
+		record["FEE-INV-MGR-9"] = rowData[1485-1:1487]
+		record["FEE-IM-OFFSET-9"] = rowData[1488-1:1497]
+		record["FEE-SCHEDULE-10"] = rowData[1498-1:1501]
+		record["FEE-FRQ-10"] = rowData[1502-1]
+		record["FEE-CURRENCY-10"] = rowData[1503-1:1504]
+		record["FEE-START-DATE-10"] = rowData[1505-1:1512]
+		record["NEXT-FEE-DATE-10"] = rowData[1513-1:1520]
+		record["LAST-FEE-DATE-10"] = rowData[1521-1:1528]
+		record["FEE-DISC-RATE-10"] = rowData[1529-1:1533]
+		record["FEE-IM-RATE-10"] = rowData[1534-1:1538]
+		record["FEE-FNL-TIER-10"] = rowData[1539-1]
+		record["FEE-CASH-CALC-10"] = rowData[1540-1]
+		record["FEE-CO-TSTEE-10"] = rowData[1541-1]
+		record["FEE-INV-MGR-10"] = rowData[1542-1:1544]
+		record["FEE-IM-OFFSET-10"] = rowData[1545-1:1554]
+		record["FEE-SCHEDULE-11"] = rowData[1555-1:1558]
+		record["FEE-FRQ-11"] = rowData[1559-1]
+		record["FEE-CURRENCY-11"] = rowData[1560-1:1561]
+		record["FEE-START-DATE-11"] = rowData[1562-1:1569]
+		record["NEXT-FEE-DATE-11"] = rowData[1570-1:1577]
+		record["LAST-FEE-DATE-11"] = rowData[1578-1:1585]
+		record["FEE-DISC-RATE-11"] = rowData[1586-1:1590]
+		record["FEE-IM-RATE-11"] = rowData[1591-1:1595]
+		record["FEE-FNL-TIER-11"] = rowData[1596-1]
+		record["FEE-CASH-CALC-11"] = rowData[1597-1]
+		record["FEE-CO-TSTEE-11"] = rowData[1598-1]
+		record["FEE-INV-MGR-11"] = rowData[1599-1:1601]
+		record["FEE-IM-OFFSET-11"] = rowData[1602-1:1611]
+		record["FEE-SCHEDULE-12"] = rowData[1612-1:1615]
+		record["FEE-FRQ-12"] = rowData[1616-1]
+		record["FEE-CURRENCY-12"] = rowData[1617-1:1618]
+		record["FEE-START-DATE-12"] = rowData[1619-1:1626]
+		record["NEXT-FEE-DATE-12"] = rowData[1627-1:1634]
+		record["LAST-FEE-DATE-12"] = rowData[1635-1:1642]
+		record["FEE-DISC-RATE-12"] = rowData[1643-1:1647]
+		record["FEE-IM-RATE-12"] = rowData[1648-1:1652]
+		record["FEE-FNL-TIER-12"] = rowData[1653-1]
+		record["FEE-CASH-CALC-12"] = rowData[1654-1]
+		record["FEE-CO-TSTEE-12"] = rowData[1655-1]
+		record["FEE-INV-MGR-12"] = rowData[1656-1:1658]
+		record["FEE-IM-OFFSET-12"] = rowData[1659-1:1668]
+		record["FEE REASON CODE 1"] = rowData[1669-1]
+		record["FEE REASON CODE 2"] = rowData[1670-1]
+		record["FEE REASON CODE 3"] = rowData[1671-1]
+		record["FEE REASON CODE 4"] = rowData[1672-1]
+		record["FEE REASON CODE 5"] = rowData[1673-1]
+		record["FEE REASON CODE 6"] = rowData[1674-1]
+		record["FEE REASON CODE 7"] = rowData[1675-1]
+		record["FEE REASON CODE 8"] = rowData[1676-1]
+		record["FEE REASON CODE 9"] = rowData[1677-1]
+		record["FEE REASON CODE 10"] = rowData[1678-1]
+		record["FEE REASON CODE 11"] = rowData[1679-1]
+		record["FEE REASON CODE 12"] = rowData[1680-1]
+		record["CLIENT DEFINED DATE1 STMO"] = rowData[1681-1:1688]
+		record["CLIENT DEFINED DATE2 STMO"] = rowData[1689-1:1696]
+		record["ZGTM SYSTEM AREA"] = rowData[1697-1:1746]
+		record["ACCOUNT GENERATION TRACKING NUMBER"] = rowData[1747-1:1766]
+		record["PRIOR UPDATE RR"] = rowData[1767-1:1769]
+		record["ACCOUNT CLOSED"] = rowData[1770-1]
+		record["CCYYMMDD"] = rowData[1771-1:1778]
+		record["BYPASS ITMS"] = rowData[1779-1]
+		record["INDIFREN STATUS"] = rowData[1780-1]
+		record["INDIFREN CHANGE DATE"] = rowData[1781-1:1788]
+		record["INDIFREC STATUS"] = rowData[1789-1]
+		record["INDIFREC CHANGE DATE"] = rowData[1790-1:1797]
+		record["INDIFXDN STATUS"] = rowData[1798-1]
+		record["INDIFXDN CHANGE DATE"] = rowData[1799-1:1806]
+		record["INDIFXDC STATUS"] = rowData[1807-1]
+		record["INDIFXDC CHANGE DATE"] = rowData[1808-1:1815]
+		record["INDIIPCY STATUS"] = rowData[1816-1]
+		record["INDIIPCY CHANGE DATE"] = rowData[1817-1:1824]
+		record["CPD1MMNM STATUS"] = rowData[1825-1]
+		record["CPD1MMNM CHANGE DATE"] = rowData[1826-1:1833]
+		record["CPD2SPNM STATUS"] = rowData[1834-1]
+		record["CPD2SPNM CHANGE DATE"] = rowData[1835-1:1842]
+		record["NADPNAM1 STATUS"] = rowData[1843-1]
+		record["NADPNAM1 CHANGE DATE"] = rowData[1844-1:1851]
+		record["NADPNAM2 STATUS"] = rowData[1852-1]
+		record["NADPNAM2 CHANGE DATE"] = rowData[1853-1:1860]
+		record["NATASLIN STATUS"] = rowData[1861-1]
+		record["NATASLIN CHANGE DATE"] = rowData[1862-1:1869]
+		record["NATACLIN STATUS"] = rowData[1870-1]
+		record["NATACLIN CHANGE DATE"] = rowData[1871-1:1878]
+		record["NAYESSHD STATUS"] = rowData[1879-1]
+		record["NAYESSHD CHANGE DATE"] = rowData[1880-1:1887]
+		record["NAYE2NDP STATUS"] = rowData[1888-1]
+		record["NAYE2NDP CHANGE DATE"] = rowData[1889-1:1896]
+		record["NAYECTRY STATUS"] = rowData[1897-1]
+		record["NAYECTRY CHANGE DATE"] = rowData[1898-1:1905]
+		record["OFAC TERMID"] = rowData[1906-1:1910]
+		record["OFAC CHANGE DATE"] = rowData[1911-1:1918]
+		record["DIV WITHHOLD RATE"] = rowData[1919-1:1921]
+		record["INT WITHHOLD RATE"] = rowData[1922-1:1924]
+		record["GROSS-WITHHOLD-RATE"] = rowData[1925-1:1927]
+		record["MMKT-FUND-1"] = rowData[1928-1:1934]
+		record["MMKT-FUND-2"] = rowData[1935-1:1941]
+		record["MMKT-FUND-3"] = rowData[1942-1:1948]
+		record["MMKT-FUND-4"] = rowData[1949-1:1955]
+		record["COA-SR"] = rowData[1956-1:1957]
+		record["RPO DATE"] = rowData[1958-1:1965]
+		record["REMAIL DATE"] = rowData[1966-1:1973]
+		record["CLIENT ID"] = rowData[1974-1:2043]
+		record["LARGE TRADER ID4"] = rowData[2060-1:2072]
+		record["LARGE TRADER ID5"] = rowData[2073-1:2085]
+		record["LARGE TRADER ID6"] = rowData[2086-1:2098]
+		record["LARGE TRADER ID7"] = rowData[2099-1:2111]
+		record["LARGE TRADER ID8"] = rowData[2112-1:2124]
+		record["LARGE TRADER ID9"] = rowData[2125-1:2137]
+		record["LARGE TRADER ID10"] = rowData[2138-1:2150]
+		record["LARGE TRADER ID11"] = rowData[2151-1:2163]
+		record["LARGE TRADER ID12"] = rowData[2164-1:2176]
+		record["LARGE TRADER ID13"] = rowData[2177-1:2189]
+		record["LARGE TRADER ID14"] = rowData[2190-1:2202]
+		record["LARGE TRADER ID15"] = rowData[2203-1:2215]
+		record["STRADDLE"] = rowData[2216-1]
+		record["FPL-ELIGIBLE"] = rowData[2217-1]
+		record["INCOME-BR"] = rowData[2218-1:2220]
+		record["INCOME-ACT"] = rowData[2221-1:2225]
+		record["INCOME-TYP"] = rowData[2226-1]
+		record["FPL-MIN-RATE"] = rowData[2227-1:2230]
+		record["FPL-MAX-LOAN"] = rowData[2231-1:2242]
+		record["FPL-AGREEMENT"] = rowData[2243-1]
+		record["FDID"] = rowData[2244-1:2291]
+		record["FPL-MIN-RATE-NEW"] = rowData[2292-1:2297]
+		record["RST-ACCT-IND"] = rowData[2298-1]
+		record["LTID-EFFECTIVE-DATE-01"] = rowData[2291-1:2306]
+		record["LTID-END-DATE-01"] = rowData[2299-1:2314]
+		record["LTID-REASON-CODE-01"] = rowData[2307-1]
+		record["LTID-EFFECTIVE-DATE-02"] = rowData[2308-1:2323]
+		record["LTID-END-DATE-02"] = rowData[2316-1:2331]
+		record["LTID-REASON-CODE-02"] = rowData[2324-1]
+		record["LTID-EFFECTIVE-DATE-03"] = rowData[2325-1:2340]
+		record["LTID-END-DATE-03"] = rowData[2333-1:2348]
+		record["LTID-REASON-CODE-03"] = rowData[2341-1]
+		record["LTID-EFFECTIVE-DATE-04"] = rowData[2342-1:2357]
+		record["LTID-END-DATE-04"] = rowData[2350-1:2365]
+		record["LTID-REASON-CODE-04"] = rowData[2358-1]
+		record["LTID-EFFECTIVE-DATE-05"] = rowData[2359-1:2366]
+		record["LTID-END-DATE-05"] = rowData[2367-1:2374]
+		record["LTID-REASON-CODE-05"] = rowData[2375-1]
+		record["LTID-EFFECTIVE-DATE-06"] = rowData[2376-1:2383]
+		record["LTID-END-DATE-06"] = rowData[2384-1:2391]
+		record["LTID-REASON-CODE-06"] = rowData[2392-1]
+		record["LTID-EFFECTIVE-DATE-07"] = rowData[2393-1:2401]
+		record["LTID-END-DATE-07"] = rowData[2401-1:2408]
+		record["LTID-REASON-CODE-07"] = rowData[2409-1]
+		record["LTID-EFFECTIVE-DATE-08"] = rowData[2410-1:2417]
+		record["LTID-END-DATE-08"] = rowData[2418-1:2425]
+		record["LTID-REASON-CODE-08"] = rowData[2426-1]
+		record["LTID-EFFECTIVE-DATE-09"] = rowData[2427-1:2434]
+		record["LTID-END-DATE-09"] = rowData[2435-1:2542]
+		record["LTID-REASON-CODE-09"] = rowData[2443-1]
+		record["LTID-EFFECTIVE-DATE-10"] = rowData[2444-1:2451]
+		record["LTID-END-DATE-10"] = rowData[2452-1:2459]
+		record["LTID-REASON-CODE-10"] = rowData[2460-1]
+		record["LTID-EFFECTIVE-DATE-11"] = rowData[2461-1:2468]
+		record["LTID-END-DATE-11"] = rowData[2469-1:2476]
+		record["LTID-REASON-CODE-11"] = rowData[2477-1]
+		record["LTID-EFFECTIVE-DATE-12"] = rowData[2478-1:2485]
+		record["LTID-END-DATE-12"] = rowData[2486-1:2493]
+		record["LTID-REASON-CODE-12"] = rowData[2494-1]
+		record["LTID-EFFECTIVE-DATE-13"] = rowData[2495-1:2502]
+		record["LTID-END-DATE-13"] = rowData[2503-1:2510]
+		record["LTID-REASON-CODE-13"] = rowData[2511-1]
+		record["LTID-EFFECTIVE-DATE-14"] = rowData[2512-1:2519]
+		record["LTID-END-DATE-14"] = rowData[2520-1:2527]
+		record["LTID-REASON-CODE-14"] = rowData[2528-1]
+		record["LTID-EFFECTIVE-DATE-15"] = rowData[2529-1:2536]
+		record["LTID-END-DATE-15"] = rowData[2537-1:2637]
+		record["LTID-REASON-CODE-15"] = rowData[2545-1]
+		record["FDID-PREV"] = rowData[2546-1:2585]
+		record["AFFIDAVIT"] = rowData[2586-1]
+		record["INTERNATIONAL AND REGIONAL ORGANIZATIONS"] = rowData[2589-1:2594]
+        record["FILLER"] = rowData[2595-1:2596]
+
+            
+    elif rowType == "55A":
+        # Row type: 55A - USER DEFINED FREE-TEXT RECORD
+        rowType = "USER DEFINED FREE-TEXT RECORD"
+		record["COMMON RECORD AREA RECORD ID = 55"] = rowData[47-1:68]
+		record["SEGMENT A"] = rowData[69-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[70-1:73]
+		record["NUMBER OF TEXT LINES (01 - 80)"] = rowData[74-1:75]
+        record["1ST TEXT LINE (80 LINES)"] = rowData[76-1:155]
+
+            
+    elif rowType == "80A":
+        # Row type: 80A - CLIENT TRAILER RECORD
+        rowType = "CLIENT TRAILER RECORD"
+		record["COMMON RECORD AREA - RECORD ID = 80"] = rowData[47-1:68]
+		record["SEGMENT A"] = rowData[69-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[70-1:73]
+		record["TOTAL RECORDS FOR THIS CLIENT"] = rowData[74-1:84]
+		record["TOTAL PRINCIPAL-PARTY RECORDS"] = rowData[85-1:95]
+		record["TOTAL INTERESTED-PARTY RECORDS"] = rowData[96-1:106]
+		record["TOTAL PROVIDENT BANK ACM RECORDS"] = rowData[107-1:117]
+		record["TOTAL AMERICAN EXPRESS ACM RECORDS"] = rowData[118-1:128]
+		record["TOTAL INTERESTED PARTIES"] = rowData[129-1:139]
+		record["PRODUCTION DATE"] = rowData[140-1:145]
+		record["SYSTEM DATE"] = rowData[146-1:151]
+		record["SYSTEM TIME"] = rowData[152-1:157]
+        record["FOR FUTURE USE"] = rowData[158-1:178]
+
+            
+    elif rowType == "90A":
+        # Row type: 90A - FILE TRAILER RECORD
+        rowType = "FILE TRAILER RECORD"
+		record["COMMON RECORD AREA - RECORD ID = 90"] = rowData[47-1:68]
+		record["SEGMENT A"] = rowData[69-1]
+		record["LENGTH OF THIS SEGMENT"] = rowData[70-1:71]
+		record["TOTAL RECORDS FOR THE FILE"] = rowData[74-1:84]
+		record["TOTAL PRINCIPAL-PARTY RECORDS"] = rowData[85-1:95]
+		record["TOTAL INTERESTED-PARTY RECORDS"] = rowData[96-1:106]
+		record["TOTAL PROVIDENT BANK ACM RECORDS"] = rowData[107-1:117]
+		record["TOTAL AMERICAN EXPRESS ACM RECORDS"] = rowData[118-1:128]
+		record["TOTAL INTERESTED PARTIES"] = rowData[129-1:139]
+		record["PRODUCTION DATE"] = rowData[140-1:145]
+		record["SYSTEM DATE"] = rowData[146-1:151]
+		record["SYSTEM TIME"] = rowData[152-1:157]
+        record["FOR FUTURE USE"] = rowData[158-1:178]
+
+            
+    else:
+        # Bad structure of the record
+        rowType = "<Unrecognized>"
+        rowStatus = -2
+        exceptions.append(f"INVALID_STRUCTURE#ROW TYPE#Invalid row type")
+            
+    record["_ROW_TYPE"]                         = rowType
+    record["_ROW_STATUS"]                       = rowStatus
+    record["_ROW_EXCEPTIONS"]                   = exceptions
+    print ("OK2")      
+    return record
+
